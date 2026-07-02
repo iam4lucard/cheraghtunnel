@@ -1,0 +1,9 @@
+/target
+**/*.db
+**/*.db-journal
+/test.db
+/test2.db
+.DS_Store
+.idea
+.vscode
+*.log

@@ -1,0 +1,133 @@
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+mod db;
+mod api;
+mod tunnel;
+mod common;
+
+#[derive(Parser)]
+#[command(name = "cheraghtunnel")]
+#[command(about = "CheraghTunnel: High-performance reverse tunneling manager in Rust", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start the Web Management Panel
+    Panel {
+        /// Port to bind the web panel to
+        #[arg(short, long, default_value_t = 8000)]
+        port: u16,
+
+        /// Path to SQLite database file
+        #[arg(short, long, default_value = "cheraghtunnel.db")]
+        db_path: PathBuf,
+    },
+    /// Start the tunnel server listener (Iran server)
+    Server {
+        /// Control port to listen on for client agents
+        #[arg(short, long)]
+        control_port: u16,
+
+        /// Public port that users connect to
+        #[arg(short, long)]
+        public_port: u16,
+
+        /// Authentication token
+        #[arg(short, long)]
+        token: String,
+
+        /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo)
+        #[arg(short, long, default_value = "beam")]
+        protocol: String,
+
+        /// Custom decoy website URL or local path for Mirage/Aura
+        #[arg(long)]
+        decoy: Option<String>,
+    },
+    /// Start the tunnel client agent (Kharej server)
+    Client {
+        /// Iran server IP or hostname
+        #[arg(short, long)]
+        server_ip: String,
+
+        /// Iran server control port
+        #[arg(short, long)]
+        control_port: u16,
+
+        /// Iran server public port to request forwarding
+        #[arg(short, long)]
+        public_port: u16,
+
+        /// Local service address to forward to (e.g. 127.0.0.1:443)
+        #[arg(short, long, default_value = "127.0.0.1:443")]
+        local_service: String,
+
+        /// Authentication token
+        #[arg(short, long)]
+        token: String,
+
+        /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo)
+        #[arg(short, long, default_value = "beam")]
+        protocol: String,
+
+        /// Tunnel ID for tracking traffic speeds
+        #[arg(long, default_value_t = 0)]
+        tunnel_id: i64,
+    },
+}
+
+#[tokio::main]
+async fn main() {
+    // Initialize logging
+    tracing_subscriber::fmt::init();
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Panel { port, db_path } => {
+            println!("Initializing CheraghTunnel Panel on port {}...", port);
+            if let Err(e) = db::init_db(&db_path) {
+                eprintln!("Database initialization failed: {}", e);
+                std::process::exit(1);
+            }
+            if let Err(e) = api::run_panel(port, db_path).await {
+                eprintln!("Panel server error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Server {
+            control_port,
+            public_port,
+            token,
+            protocol,
+            decoy,
+        } => {
+            println!("Starting CheraghTunnel Server on control port {}, forwarding public port {} via protocol '{}'...",
+                     control_port, public_port, protocol);
+            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &protocol, decoy, 0).await {
+                eprintln!("Server tunnel error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Client {
+            server_ip,
+            control_port,
+            public_port,
+            local_service,
+            token,
+            protocol,
+            tunnel_id,
+        } => {
+            println!("Starting CheraghTunnel Client connecting to {}:{} forwarding to {}...",
+                     server_ip, control_port, local_service);
+            if let Err(e) = tunnel::run_client(&server_ip, control_port, public_port, &local_service, &token, &protocol, tunnel_id).await {
+                eprintln!("Client tunnel error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+}
