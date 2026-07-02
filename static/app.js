@@ -221,6 +221,7 @@ async function loadTunnels() {
                         </button>
                         <button class="btn btn-secondary" onclick="showDeployModal(${t.id})">SSH Deploy</button>
                         <button class="btn btn-secondary" onclick="showNodeCommand(${t.id})">Node Cmd</button>
+                        <button class="btn btn-secondary" style="background: rgba(0, 240, 255, 0.15); color: var(--color-cyan);" onclick="showEditModal(${t.id})">Edit</button>
                         <button class="btn btn-secondary btn-danger" style="background: rgba(255,51,102,0.15); color: #ff3366;" onclick="deleteTunnel(${t.id})">Delete</button>
                     </div>
                 </td>
@@ -298,6 +299,28 @@ function showNodeCommand(id) {
     document.getElementById('cmd-modal').style.display = 'flex';
 }
 
+async function showEditModal(id) {
+    try {
+        const res = await apiFetch(`/api/tunnels/${id}`);
+        if (!res || !res.ok) return;
+        const t = await res.json();
+        
+        document.getElementById('edit-tunnel-id').value = t.id;
+        document.getElementById('edit-tunnel-name').value = t.name;
+        document.getElementById('edit-tunnel-protocol').value = t.protocol;
+        document.getElementById('edit-iran-port').value = t.iran_port;
+        document.getElementById('edit-control-port').value = t.control_port;
+        document.getElementById('edit-kharej-port').value = t.kharej_port;
+        document.getElementById('edit-backup-ips').value = t.backup_ips || '';
+        document.getElementById('edit-decoy-url').value = t.decoy_url || '';
+        document.getElementById('edit-tunnel-token').value = t.token;
+        
+        document.getElementById('edit-modal').style.display = 'flex';
+    } catch (err) {
+        console.error(err);
+    }
+}
+
 function showDeployModal(id) {
     document.getElementById('deploy-tunnel-id').value = id;
     document.getElementById('deploy-modal').style.display = 'flex';
@@ -333,4 +356,59 @@ async function apiFetch(url, options = {}) {
 window.toggleTunnel = toggleTunnel;
 window.deleteTunnel = deleteTunnel;
 window.showNodeCommand = showNodeCommand;
+window.showEditModal = showEditModal;
 window.showDeployModal = showDeployModal;
+
+// Edit form submit & token helpers
+document.addEventListener('DOMContentLoaded', () => {
+    const editModal = document.getElementById('edit-modal');
+    const editForm = document.getElementById('edit-tunnel-form');
+
+    // Close edit modal
+    document.getElementById('close-edit-modal').addEventListener('click', () => {
+        editModal.style.display = 'none';
+    });
+
+    // Generate token in edit modal
+    document.getElementById('edit-gen-token-btn').addEventListener('click', () => {
+        const randToken = Array.from({length: 10}, () => Math.random().toString(36).charAt(2).toUpperCase()).join('');
+        document.getElementById('edit-tunnel-token').value = randToken;
+    });
+
+    // Handle Edit Submit
+    editForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const id = document.getElementById('edit-tunnel-id').value;
+        const payload = {
+            id: parseInt(id),
+            name: document.getElementById('edit-tunnel-name').value,
+            protocol: document.getElementById('edit-tunnel-protocol').value,
+            iran_port: parseInt(document.getElementById('edit-iran-port').value),
+            control_port: parseInt(document.getElementById('edit-control-port').value),
+            kharej_port: parseInt(document.getElementById('edit-kharej-port').value),
+            token: document.getElementById('edit-tunnel-token').value,
+            decoy_url: document.getElementById('edit-decoy-url').value || null,
+            backup_ips: document.getElementById('edit-backup-ips').value || null,
+            status: "inactive",
+            stats_rx: 0,
+            stats_tx: 0,
+            stats_speed_rx: 0,
+            stats_speed_tx: 0
+        };
+
+        try {
+            const res = await apiFetch(`/api/tunnels/${id}`, {
+                method: 'PUT',
+                body: JSON.stringify(payload)
+            });
+            if (res && res.ok) {
+                editModal.style.display = 'none';
+                loadTunnels();
+            } else if (res) {
+                alert("Failed to update tunnel configuration");
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    });
+});

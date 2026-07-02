@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post, delete},
+    routing::{get, post},
     Router, Json, Extension,
     response::{IntoResponse, Response},
     http::{StatusCode, HeaderMap, header},
@@ -89,7 +89,7 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
     // Protected routes (require auth token)
     let protected_routes = Router::new()
         .route("/api/tunnels", get(get_tunnels_handler).post(create_tunnel_handler))
-        .route("/api/tunnels/:id", delete(delete_tunnel_handler))
+        .route("/api/tunnels/:id", get(get_tunnel_handler).put(update_tunnel_handler).delete(delete_tunnel_handler))
         .route("/api/tunnels/:id/toggle", post(toggle_tunnel_handler))
         .route("/api/tunnels/:id/deploy", post(deploy_tunnel_handler))
         .route("/api/stats", get(stats_handler))
@@ -231,6 +231,74 @@ async fn delete_tunnel_handler(
     }
 }
 
+async fn get_tunnel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> impl IntoResponse {
+    match db::get_tunnel_by_id(&state.db_path, id) {
+        Ok(Some(t)) => (StatusCode::OK, Json(t)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn update_tunnel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(payload): Json<Tunnel>,
+) -> impl IntoResponse {
+    let mut servers = state.active_servers.lock().await;
+    let was_active = servers.contains_key(&id);
+    if was_active {
+        if let Some(handle) = servers.remove(&id) {
+            handle.abort();
+        }
+    }
+    drop(servers);
+
+    match db::update_tunnel(&state.db_path, id, &payload) {
+        Ok(_) => {
+            if was_active {
+                if let Some(t) = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None) {
+                    let _ = start_tunnel_server(state, &t, id).await;
+                }
+            }
+            StatusCode::OK.into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn start_tunnel_server(state: Arc<AppState>, tunnel: &db::Tunnel, id: i64) -> Result<(), String> {
+    let mut servers = state.active_servers.lock().await;
+    if servers.contains_key(&id) {
+        return Ok(());
+    }
+
+    let token = tunnel.token.clone();
+    let protocol = tunnel.protocol.clone();
+    let control_port = tunnel.control_port;
+    let public_port = tunnel.iran_port;
+    let decoy = tunnel.decoy_url.clone();
+
+    // Spawn background server task passing correct tunnel ID for speed stats tracking
+    let proto_spawn = protocol.clone();
+    let state_clone = state.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(e) = tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id).await {
+            eprintln!("Background tunnel server daemon error: {}", e);
+        }
+        let _ = db::update_tunnel_status(&state_clone.db_path, id, "inactive");
+        let mut servers = state_clone.active_servers.lock().await;
+        servers.remove(&id);
+    });
+
+    servers.insert(id, handle);
+    let _ = db::update_tunnel_status(&state.db_path, id, "active");
+    println!("Spawned background tunnel server daemon for id = {}, protocol = {}", id, protocol);
+    Ok(())
+}
+
 async fn toggle_tunnel_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
@@ -253,29 +321,11 @@ async fn toggle_tunnel_handler(
         println!("Aborted tunnel server daemon for id = {}", id);
         (StatusCode::OK, Json("Tunnel stopped")).into_response()
     } else {
-        // If inactive, start it
-        let token = tunnel.token.clone();
-        let protocol = tunnel.protocol.clone();
-        let control_port = tunnel.control_port;
-        let public_port = tunnel.iran_port;
-        let decoy = tunnel.decoy_url.clone();
-
-        // Spawn background server task passing correct tunnel ID for speed stats tracking
-        let proto_spawn = protocol.clone();
-        let state_clone = state.clone();
-        let handle = tokio::spawn(async move {
-            if let Err(e) = tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id).await {
-                eprintln!("Background tunnel server daemon error: {}", e);
-            }
-            let _ = db::update_tunnel_status(&state_clone.db_path, id, "inactive");
-            let mut servers = state_clone.active_servers.lock().await;
-            servers.remove(&id);
-        });
-
-        servers.insert(id, handle);
-        let _ = db::update_tunnel_status(&state.db_path, id, "active");
-        println!("Spawned background tunnel server daemon for id = {}, protocol = {}", id, protocol);
-        (StatusCode::OK, Json("Tunnel started")).into_response()
+        drop(servers);
+        match start_tunnel_server(state, &tunnel, id).await {
+            Ok(_) => (StatusCode::OK, Json("Tunnel started")).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        }
     }
 }
 
@@ -295,9 +345,13 @@ async fn deploy_tunnel_handler(
     Json(payload): Json<DeployRequest>,
 ) -> impl IntoResponse {
     let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
-    if tunnel_opt.is_none() {
-        return StatusCode::NOT_FOUND.into_response();
-    }
+    let tunnel = match tunnel_opt {
+        Some(t) => t,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    // Auto-start server on Iran side so the control port is listening when Kharej connects!
+    let _ = start_tunnel_server(state.clone(), &tunnel, id).await;
 
     let db_path_spawn = state.db_path.clone();
     
@@ -328,7 +382,7 @@ async fn deploy_tunnel_handler(
             Ok(output) => {
                 if output.status.success() {
                     println!("[DEPLOY] SSH deployment for tunnel {} finished successfully", id);
-                    let _ = db::update_tunnel_status(&db_path_spawn, id, "inactive");
+                    let _ = db::update_tunnel_status(&db_path_spawn, id, "active");
                 } else {
                     let err_msg = String::from_utf8_lossy(&output.stderr);
                     eprintln!("[DEPLOY] SSH deployment for tunnel {} failed: {}", id, err_msg);

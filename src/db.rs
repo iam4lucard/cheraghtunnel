@@ -231,3 +231,23 @@ pub fn set_setting(db_path: &Path, key: &str, value: &str) -> Result<()> {
     )?;
     Ok(())
 }
+
+pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
+    let conn = get_db_conn(db_path)?;
+    conn.execute(
+        "UPDATE tunnels SET name=?1, protocol=?2, iran_port=?3, kharej_port=?4, control_port=?5, token=?6, decoy_url=?7, backup_ips=?8
+         WHERE id=?9",
+        params![
+            tunnel.name,
+            tunnel.protocol,
+            tunnel.iran_port,
+            tunnel.kharej_port,
+            tunnel.control_port,
+            tunnel.token,
+            tunnel.decoy_url,
+            tunnel.backup_ips,
+            id
+        ],
+    )?;
+    Ok(())
+}

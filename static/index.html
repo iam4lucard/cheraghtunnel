@@ -250,6 +250,69 @@
         </div>
     </div>
 
+    <!-- Edit Tunnel Modal -->
+    <div id="edit-modal" class="modal-overlay" style="display: none;">
+        <div class="glass-card modal-card">
+            <h3>Edit Tunnel Configuration</h3>
+            <form id="edit-tunnel-form">
+                <input type="hidden" id="edit-tunnel-id">
+                <div class="form-group">
+                    <label for="edit-tunnel-name">Tunnel Name</label>
+                    <input type="text" id="edit-tunnel-name" required placeholder="e.g. game-tunnel">
+                </div>
+                <div class="form-group">
+                    <label for="edit-tunnel-protocol">Transport Protocol</label>
+                    <select id="edit-tunnel-protocol">
+                        <option value="beam">Beam (tcpmux - Parallel TCP)</option>
+                        <option value="aura">Aura (httpmux - HTTP Mimicry)</option>
+                        <option value="nova">Nova (httpsmux - HTTPS+TLS)</option>
+                        <option value="glimmer">Glimmer (wsmux - WebSocket)</option>
+                        <option value="beacon">Beacon (wssmux - WebSocket+TLS)</option>
+                        <option value="flash">Flash (kcpmux - KCP/UDP)</option>
+                        <option value="ray">Ray (rawmux - Raw KCP/UDP)</option>
+                        <option value="photon">Photon (quantummux - Raw TCP+KCP Gaming)</option>
+                        <option value="lantern">Lantern (tunmux - Layer 2/3 TUN)</option>
+                        <option value="mirage">Mirage (realitymux - reality TLS)</option>
+                        <option value="halo">Halo (webrtcmux - WebRTC DataChannel)</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="edit-iran-port">Iran Public Port (Client Access)</label>
+                        <input type="number" id="edit-iran-port" required placeholder="e.g. 443" min="1" max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-control-port">Server Control Port</label>
+                        <input type="number" id="edit-control-port" required placeholder="e.g. 8090" min="1" max="65535">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="edit-kharej-port">Kharej Port (Target Local Port)</label>
+                    <input type="number" id="edit-kharej-port" required placeholder="e.g. 8080" min="1" max="65535">
+                </div>
+                <div class="form-group">
+                    <label for="edit-backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
+                    <input type="text" id="edit-backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
+                </div>
+                <div class="form-group">
+                    <label for="edit-decoy-url">Decoy Website URL / Local Path (Mirage/Aura - Optional)</label>
+                    <input type="text" id="edit-decoy-url" placeholder="e.g. https://www.microsoft.com">
+                </div>
+                <div class="form-group">
+                    <label for="edit-tunnel-token">Auth Token</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="edit-tunnel-token" required style="flex: 1;">
+                        <button type="button" id="edit-gen-token-btn" class="btn btn-secondary btn-small">Generate</button>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" id="close-edit-modal" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script src="/app.js"></script>
 </body>
 </html>
