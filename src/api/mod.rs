@@ -437,14 +437,14 @@ else
 fi
 
 # Setup systemd daemon
-cat <<EOF > /etc/systemd/system/cheragh-node-$id.service
+cat <<EOF > /etc/systemd/system/cheragh-node-$TUNNEL_ID.service
 [Unit]
-Description=CheraghTunnel Client Node - $PROTOCOL ($id)
+Description=CheraghTunnel Client Node - $PROTOCOL ($TUNNEL_ID)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cheraghtunnel client -s $IRAN_IP -c $control_port -p $public_port -l 127.0.0.1:$kharej_port -t $token --protocol $protocol --tunnel-id $id
+ExecStart=/usr/local/bin/cheraghtunnel client -s $IRAN_IP -c $CONTROL_PORT -p $PUBLIC_PORT -l 127.0.0.1:$LOCAL_PORT -t $TOKEN --protocol $PROTOCOL --tunnel-id $TUNNEL_ID
 Restart=always
 User=root
 
@@ -453,8 +453,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable cheragh-node-$id
-systemctl start cheragh-node-$id
+systemctl enable cheragh-node-$TUNNEL_ID
+systemctl start cheragh-node-$TUNNEL_ID
 echo "Setup completed successfully!"
 "#,
         ips, tunnel.control_port, tunnel.iran_port, tunnel.kharej_port, tunnel.token, tunnel.protocol, id
