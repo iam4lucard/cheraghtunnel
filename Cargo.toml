@@ -42,3 +42,6 @@ rcgen = "0.12.1" # Certificate generator
 rand = "0.8.5"   # Random padding/jitter
 tokio-util = { version = "0.7.10", features = ["compat"] }
 futures = "0.3.30"
+socket2 = { version = "0.5.5", features = ["all"] }
+libc = "0.2.152"
+

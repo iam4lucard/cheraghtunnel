@@ -133,11 +133,14 @@ pub async fn run_server(
 
     // Bind BOTH listeners upfront (Fix: public port was re-bound inside loop)
     let control_listener = TcpListener::bind(format!("0.0.0.0:{}", control_port)).await?;
+    let _ = crate::common::network::optimize_listener(&control_listener);
     let public_listener = Arc::new(TcpListener::bind(format!("0.0.0.0:{}", public_port)).await?);
+    let _ = crate::common::network::optimize_listener(&public_listener);
     println!("[SERVER] Listening for public user traffic on port: {}", public_port);
     
     // Accept the client control connection
     while let Ok((control_socket, addr)) = control_listener.accept().await {
+        let _ = crate::common::network::optimize_socket(&control_socket);
         println!("[SERVER] Client agent connected from: {}", addr);
         
         // Perform server handshake first
@@ -164,6 +167,7 @@ pub async fn run_server(
         let public_listener_clone = public_listener.clone();
         tokio::spawn(async move {
             while let Ok((user_socket, _)) = public_listener_clone.accept().await {
+                let _ = crate::common::network::optimize_socket(&user_socket);
                 println!("[SERVER] User connected to public port, establishing tunnel stream...");
                 
                 let control_session_clone = control_session.clone();
@@ -217,7 +221,10 @@ pub async fn run_client(
 
         // Connect to control port
         let control_socket = match TcpStream::connect(format!("{}:{}", current_ip, control_port)).await {
-            Ok(s) => s,
+            Ok(s) => {
+                let _ = crate::common::network::optimize_socket(&s);
+                s
+            }
             Err(e) => {
                 eprintln!("[CLIENT] Connection to {} failed: {}. Trying next IP in 3s...", current_ip, e);
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -268,7 +275,10 @@ pub async fn run_client(
             let local_target_task = local_target.clone();
             tokio::spawn(async move {
                 let local_conn = match connect_to_local(&local_target_task).await {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        let _ = crate::common::network::optimize_socket(&s);
+                        s
+                    }
                     Err(e) => {
                         eprintln!("[CLIENT] Failed to connect to local service ({}): {}", local_target_task, e);
                         return;
