@@ -287,6 +287,8 @@ pub async fn run_client(
                 let _ = tx.send(tunnel_stream).await;
             });
         });
+        
+        drop(inbound_tx);
 
         // Accept virtual streams opened by the server and pipe them
         while let Some(tunnel_stream) = inbound_rx.recv().await {
