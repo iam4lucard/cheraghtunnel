@@ -158,12 +158,16 @@ pub struct UdpVirtualStreamInner {
 
 pub struct UdpVirtualStream {
     pub inner: Arc<Mutex<UdpVirtualStreamInner>>,
-    manager_handle: Option<tokio::task::JoinHandle<()>>,
+    pub manager_handle: Option<tokio::task::JoinHandle<()>>,
+    pub recv_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for UdpVirtualStream {
     fn drop(&mut self) {
         if let Some(h) = self.manager_handle.take() {
+            h.abort();
+        }
+        if let Some(h) = self.recv_handle.take() {
             h.abort();
         }
     }
@@ -206,6 +210,7 @@ impl UdpVirtualStream {
         Self {
             inner,
             manager_handle: Some(manager_handle),
+            recv_handle: None,
         }
     }
 

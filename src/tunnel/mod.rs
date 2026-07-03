@@ -244,17 +244,6 @@ pub async fn run_client(
             let socket = Arc::new(socket);
             let (tx, rx) = mpsc::channel(1024);
             
-            // Client receiver thread
-            let socket_clone = socket.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; 65535];
-                while let Ok((n, _)) = socket_clone.recv_from(&mut buf).await {
-                    if tx.send(buf[..n].to_vec()).await.is_err() {
-                        break;
-                    }
-                }
-            });
-
             let mode = get_udp_mode(protocol);
             let peer_addr = match format!("{}:{}", current_ip, control_port).parse() {
                 Ok(addr) => addr,
@@ -263,7 +252,18 @@ pub async fn run_client(
                     return Err(Box::new(e));
                 }
             };
-            let mut stream = UdpVirtualStream::new(socket, peer_addr, mode, rx, false);
+            let mut stream = UdpVirtualStream::new(socket.clone(), peer_addr, mode, rx, false);
+
+            let socket_clone = socket.clone();
+            let recv_handle = tokio::spawn(async move {
+                let mut buf = vec![0u8; 65535];
+                while let Ok((n, _)) = socket_clone.recv_from(&mut buf).await {
+                    if tx.send(buf[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            stream.recv_handle = Some(recv_handle);
             
             if mode != UdpMode::Ray {
                 // Send SYN handshake packet
