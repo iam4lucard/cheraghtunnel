@@ -3,10 +3,13 @@ pub mod transport;
 
 use std::error::Error;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-
+use tokio::net::{TcpStream, UdpSocket};
+use tokio::sync::mpsc;
 use crate::tunnel::multiplex::{connect_to_local, pipe_streams_monitored};
+use crate::tunnel::transport::{TransportStream, server_handshake, client_handshake};
+use crate::tunnel::transport::udp::{UdpVirtualStream, UdpMultiplexer, UdpMode};
 
 struct LoopGuard {
     handle: Option<tokio::task::JoinHandle<()>>,
@@ -20,10 +23,25 @@ impl Drop for LoopGuard {
     }
 }
 
-async fn relay_control_channel(mut control: TcpStream, peer: TcpStream, tunnel_id: i64) {
+async fn relay_control_channel(mut control: TransportStream, peer: TcpStream, tunnel_id: i64) {
     let _ = control.write_u8(1).await;
     let _ = control.flush().await;
     let _ = pipe_streams_monitored(peer, control, tunnel_id).await;
+}
+
+fn is_udp_protocol(protocol: &str) -> bool {
+    matches!(protocol, "flash" | "ray" | "photon" | "lantern" | "halo" | "hysteria")
+}
+
+fn get_udp_mode(protocol: &str) -> UdpMode {
+    match protocol {
+        "ray" => UdpMode::Ray,
+        "photon" => UdpMode::Photon,
+        "lantern" => UdpMode::Lantern,
+        "halo" => UdpMode::Halo,
+        "hysteria" => UdpMode::Hysteria,
+        _ => UdpMode::Flash,
+    }
 }
 
 pub async fn run_server(
@@ -39,55 +57,108 @@ pub async fn run_server(
         protocol, control_port, public_port
     );
 
-    let control_addr: std::net::SocketAddr = format!("0.0.0.0:{}", control_port).parse()?;
     let public_addr: std::net::SocketAddr = format!("0.0.0.0:{}", public_port).parse()?;
-
-    let control_listener = crate::common::network::bind_listener(control_addr)?;
     let public_listener = Arc::new(crate::common::network::bind_listener(public_addr)?);
     println!("[SERVER] Listening for public user traffic on port: {}", public_port);
 
-    // Use an mpsc channel to queue authenticated control sockets from client nodes.
-    // This solves the single-connection bottleneck: the client connects multiple times,
-    // each authenticated connection is pushed into the channel, and the public accept loop
-    // pulls one out per incoming user connection.
-    let (control_tx, mut control_rx) = tokio::sync::mpsc::channel::<TcpStream>(64);
+    // Queue to hold authenticated control streams ready for public connections
+    let (control_tx, mut control_rx) = mpsc::channel::<TransportStream>(64);
 
-    // Spawn task to accept and authenticate control connections from client nodes.
-    // Wrap in LoopGuard so the task is auto-aborted when run_server returns.
     let token_owned = token.to_string();
     let protocol_owned = protocol.to_string();
     let decoy_owned = decoy.clone();
+
+    // Spawn task to accept and authenticate control connections from client nodes.
+    // Wrap in LoopGuard so the task is auto-aborted when run_server returns.
     let _accept_guard = LoopGuard {
         handle: Some(tokio::spawn(async move {
-            loop {
-                match control_listener.accept().await {
-                    Ok((control_socket, addr)) => {
-                        println!("[SERVER] Client node connected from: {}", addr);
-
-                        let control_socket = match transport::server_handshake(
-                            control_socket,
-                            &protocol_owned,
-                            &token_owned,
-                            decoy_owned.clone(),
-                        )
-                        .await
-                        {
-                            Ok(s) => s,
-                            Err(e) => {
-                                eprintln!("[SERVER] Handshake failed: {}", e);
-                                continue;
-                            }
-                        };
-
-                        // Push authenticated control socket into the channel
-                        if control_tx.send(control_socket).await.is_err() {
-                            eprintln!("[SERVER] Control channel closed, stopping accept loop");
-                            break;
-                        }
-                    }
+            if is_udp_protocol(&protocol_owned) {
+                // --- UDP Control Protocol Server ---
+                let mode = get_udp_mode(&protocol_owned);
+                let control_addr = format!("0.0.0.0:{}", control_port);
+                let socket = match UdpSocket::bind(&control_addr).await {
+                    Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[SERVER] Control listener error: {}", e);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        eprintln!("[SERVER] Failed to bind UDP control port {}: {}", control_port, e);
+                        return;
+                    }
+                };
+                
+                println!("[SERVER] Listening for UDP control packets on port: {}", control_port);
+                
+                let (new_conn_tx, mut new_conn_rx) = mpsc::channel::<UdpVirtualStream>(100);
+                let _multiplexer = UdpMultiplexer::new(socket, mode, new_conn_tx);
+                
+                let token_auth = format!("Cheragh-Auth {}", token_owned);
+                
+                while let Some(mut stream) = new_conn_rx.recv().await {
+                    let control_tx_clone = control_tx.clone();
+                    let token_auth_clone = token_auth.clone();
+                    let mode_clone = mode;
+                    
+                    tokio::spawn(async move {
+                        if mode_clone == UdpMode::Ray {
+                            // Ray raw UDP needs no token handshake
+                            let _ = control_tx_clone.send(TransportStream::Udp(stream)).await;
+                            return;
+                        }
+
+                        // Wait for Client authentication header over reliable UDP
+                        let mut buf = vec![0u8; token_auth_clone.len()];
+                        if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut buf)).await {
+                            let auth_str = String::from_utf8_lossy(&buf);
+                            if auth_str == token_auth_clone {
+                                // Send ACK back to the client
+                                if stream.write_all(b"ACK").await.is_ok() && stream.flush().await.is_ok() {
+                                    let mut inner = stream.inner.lock().await;
+                                    inner.handshake_done = true;
+                                    drop(inner);
+                                    let _ = control_tx_clone.send(TransportStream::Udp(stream)).await;
+                                }
+                            }
+                        }
+                    });
+                }
+            } else {
+                // --- TCP Control Protocol Server ---
+                let control_addr = format!("0.0.0.0:{}", control_port);
+                let control_listener = match crate::common::network::bind_listener(control_addr.parse().unwrap()) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("[SERVER] Failed to bind TCP control port {}: {}", control_port, e);
+                        return;
+                    }
+                };
+
+                println!("[SERVER] Listening for TCP control connections on port: {}", control_port);
+
+                loop {
+                    match control_listener.accept().await {
+                        Ok((control_socket, addr)) => {
+                            println!("[SERVER] Client node connected from: {}", addr);
+
+                            let token_clone = token_owned.clone();
+                            let proto_clone = protocol_owned.clone();
+                            let decoy_clone = decoy_owned.clone();
+                            let control_tx_clone = control_tx.clone();
+
+                            tokio::spawn(async move {
+                                match server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
+                                    Ok(s) => {
+                                        if control_tx_clone.send(s).await.is_err() {
+                                            eprintln!("[SERVER] Control channel closed, dropping node stream");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[SERVER] Handshake failed: {}", e);
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("[SERVER] Control listener error: {}", e);
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
                     }
                 }
             }
@@ -99,7 +170,7 @@ pub async fn run_server(
         let _ = crate::common::network::optimize_socket(&user_socket);
         println!("[SERVER] User connected from {} to public port, waiting for control socket...", user_addr);
 
-        // Wait for a control socket from the channel with a timeout
+        // Wait for an authenticated control stream from the channel with a timeout
         let control_socket = match tokio::time::timeout(
             tokio::time::Duration::from_secs(10),
             control_rx.recv(),
@@ -155,27 +226,119 @@ pub async fn run_client(
             current_ip, control_port, protocol, ip_index
         );
 
-        let control_socket = match TcpStream::connect(format!("{}:{}", current_ip, control_port)).await
-        {
-            Ok(s) => {
-                let _ = crate::common::network::optimize_socket(&s);
-                s
-            }
-            Err(e) => {
-                eprintln!(
-                    "[CLIENT] Connection to {} failed: {}. Trying next IP in 3s...",
-                    current_ip, e
-                );
+        let mut control_socket = if is_udp_protocol(protocol) {
+            // --- UDP Client Transport ---
+            let socket = match UdpSocket::bind("0.0.0.0:0").await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[CLIENT] Failed to bind local UDP socket: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+            };
+            if let Err(e) = socket.connect(format!("{}:{}", current_ip, control_port)).await {
+                eprintln!("[CLIENT] Failed to connect UDP socket to {}:{}: {}", current_ip, control_port, e);
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                 ip_index += 1;
                 continue;
             }
-        };
+            let socket = Arc::new(socket);
+            let (tx, rx) = mpsc::channel(1024);
+            
+            // Client receiver thread
+            let socket_clone = socket.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 65535];
+                while let Ok((n, _)) = socket_clone.recv_from(&mut buf).await {
+                    if tx.send(buf[..n].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            });
 
-        println!("[CLIENT] Connected to Iran control port successfully");
+            let mode = get_udp_mode(protocol);
+            let peer_addr = match format!("{}:{}", current_ip, control_port).parse() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    eprintln!("[CLIENT] Invalid target address: {}", e);
+                    return Err(Box::new(e));
+                }
+            };
+            let mut stream = UdpVirtualStream::new(socket, peer_addr, mode, rx, false);
+            
+            if mode != UdpMode::Ray {
+                // Send SYN handshake packet
+                {
+                    let mut inner = stream.inner.lock().await;
+                    inner.send_syn().await;
+                }
+                
+                // Wait for SYN_ACK from server
+                let start = Instant::now();
+                let mut success = false;
+                while start.elapsed() < Duration::from_secs(5) {
+                    let done = {
+                        let inner = stream.inner.lock().await;
+                        inner.handshake_done
+                    };
+                    if done {
+                        success = true;
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
 
-        let mut control_socket =
-            match transport::client_handshake(control_socket, protocol, token).await {
+                if !success {
+                    eprintln!("[CLIENT] UDP connection handshake timeout with {}", current_ip);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    ip_index += 1;
+                    continue;
+                }
+
+                // Send authentication PSK header
+                let auth = format!("Cheragh-Auth {}", token);
+                if stream.write_all(auth.as_bytes()).await.is_err() || stream.flush().await.is_err() {
+                    eprintln!("[CLIENT] Failed to write auth token to UDP stream");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    ip_index += 1;
+                    continue;
+                }
+
+                // Read ACK response
+                let mut ack = [0u8; 3];
+                match tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut ack)).await {
+                    Ok(Ok(_)) if &ack == b"ACK" => {
+                        // Handshake fully verified
+                    }
+                    _ => {
+                        eprintln!("[CLIENT] UDP authentication failed on server {}", current_ip);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        ip_index += 1;
+                        continue;
+                    }
+                }
+            }
+
+            TransportStream::Udp(stream)
+        } else {
+            // --- TCP Client Transport ---
+            let tcp_socket = match TcpStream::connect(format!("{}:{}", current_ip, control_port)).await {
+                Ok(s) => {
+                    let _ = crate::common::network::optimize_socket(&s);
+                    s
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[CLIENT] Connection to {} failed: {}. Trying next IP in 3s...",
+                        current_ip, e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    ip_index += 1;
+                    continue;
+                }
+            };
+
+            match client_handshake(tcp_socket, protocol, token).await {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!(
@@ -186,9 +349,10 @@ pub async fn run_client(
                     ip_index += 1;
                     continue;
                 }
-            };
+            }
+        };
 
-        println!("[CLIENT] Handshake succeeded");
+        println!("[CLIENT] Handshake succeeded over '{}'", protocol);
         println!("[CLIENT] Waiting for tunnel relay signal...");
 
         let signal = match control_socket.read_u8().await {

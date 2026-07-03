@@ -40,7 +40,7 @@ enum Commands {
         #[arg(short, long)]
         token: String,
 
-        /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo)
+        /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo, hysteria)
         #[arg(short, long, default_value = "beam")]
         protocol: String,
 
@@ -70,7 +70,7 @@ enum Commands {
         #[arg(short, long)]
         token: String,
 
-        /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo)
+        /// Protocol (beam, aura, nova, glimmer, beacon, flash, ray, photon, lantern, mirage, halo, hysteria)
         #[arg(short, long, default_value = "beam")]
         protocol: String,
 
