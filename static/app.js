@@ -151,9 +151,6 @@ document.addEventListener('DOMContentLoaded', () => {
 function showDashboard() {
     document.getElementById('login-container').style.display = 'none';
     document.getElementById('dashboard-container').style.display = 'block';
-    
-    // Auto-fill host IP in diagram
-    document.getElementById('iran-ip-label').innerText = window.location.hostname;
 
     // Load initial data
     loadTunnels();
