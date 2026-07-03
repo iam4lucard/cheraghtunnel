@@ -99,7 +99,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 createForm.reset();
                 loadTunnels();
             } else if (res) {
-                alert("Failed to create tunnel config");
+                const errMsg = await res.text();
+                alert(errMsg || "Failed to create tunnel config");
             }
         } catch (err) {
             console.error(err);
@@ -405,7 +406,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 editModal.style.display = 'none';
                 loadTunnels();
             } else if (res) {
-                alert("Failed to update tunnel configuration");
+                const errMsg = await res.text();
+                alert(errMsg || "Failed to update tunnel configuration");
             }
         } catch (err) {
             console.error(err);

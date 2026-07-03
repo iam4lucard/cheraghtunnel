@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
 use serde::{Serialize, Deserialize};
+use sha2::{Sha256, Digest};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Tunnel {
@@ -75,17 +76,19 @@ pub fn init_db(db_path: &Path) -> Result<()> {
             [],
         )?;
         
-        // Generate a random default password
+        // Generate a random default password and store its SHA-256 hash
         let default_password = format!("cheragh_{}", rand::random::<u16>());
+        let hashed = hash_password(&default_password);
         conn.execute(
             "INSERT INTO settings (key, value) VALUES ('admin_password', ?1)",
-            params![default_password],
+            params![hashed],
         )?;
         
         println!("\n=======================================================");
         println!("  CheraghTunnel Admin Credentials Created:");
         println!("  Username: admin");
         println!("  Password: {}", default_password);
+        println!("  (Password is stored as SHA-256 hash in the database)");
         println!("=======================================================\n");
     }
 
@@ -251,3 +254,39 @@ pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
     )?;
     Ok(())
 }
+
+/// Hash a password using SHA-256 and return the hex-encoded digest.
+pub fn hash_password(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Constant-time byte comparison to prevent timing side-channel attacks.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Verify a password against a stored hash. Supports both:
+/// - New SHA-256 hashed passwords (64-char hex string)
+/// - Legacy plaintext passwords (for backward compatibility during migration)
+///
+/// Uses constant-time comparison to prevent timing side-channel attacks.
+pub fn verify_password(input: &str, stored: &str) -> bool {
+    if stored.len() == 64 && stored.chars().all(|c| c.is_ascii_hexdigit()) {
+        // Stored value looks like a SHA-256 hex hash
+        let hashed_input = hash_password(input);
+        constant_time_eq(hashed_input.as_bytes(), stored.as_bytes())
+    } else {
+        // Legacy plaintext comparison (for DBs not yet migrated)
+        constant_time_eq(input.as_bytes(), stored.as_bytes())
+    }
+}
+

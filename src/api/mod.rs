@@ -8,6 +8,7 @@ use axum::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
@@ -15,11 +16,64 @@ use rust_embed::RustEmbed;
 use sysinfo::System;
 
 use crate::db::{self, Tunnel};
-use crate::tunnel;
+
+/// Constant-time byte comparison to prevent timing side-channel attacks.
+/// Always compares all bytes regardless of mismatch position.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 #[derive(RustEmbed)]
 #[folder = "static/"]
 struct Assets;
+
+/// Simple in-memory login rate limiter.
+/// Tracks failed login attempts and blocks after MAX_ATTEMPTS within WINDOW_SECS.
+pub struct LoginRateLimiter {
+    attempt_count: AtomicU32,
+    window_start: AtomicU64,
+}
+
+impl LoginRateLimiter {
+    const MAX_ATTEMPTS: u32 = 5;
+    const WINDOW_SECS: u64 = 60;
+
+    fn new() -> Self {
+        Self {
+            attempt_count: AtomicU32::new(0),
+            window_start: AtomicU64::new(0),
+        }
+    }
+
+    fn check_and_record(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let window = self.window_start.load(Ordering::SeqCst);
+
+        if now.saturating_sub(window) > Self::WINDOW_SECS {
+            // Reset window
+            self.window_start.store(now, Ordering::SeqCst);
+            self.attempt_count.store(1, Ordering::SeqCst);
+            return true; // allowed
+        }
+
+        let count = self.attempt_count.fetch_add(1, Ordering::SeqCst) + 1;
+        count <= Self::MAX_ATTEMPTS
+    }
+
+    fn reset(&self) {
+        self.attempt_count.store(0, Ordering::SeqCst);
+    }
+}
 
 // Global state to track active tunnel tasks
 pub struct AppState {
@@ -27,6 +81,7 @@ pub struct AppState {
     pub active_servers: Mutex<HashMap<i64, tokio::task::JoinHandle<()>>>,
     pub session_token: Mutex<Option<String>>,
     pub system_monitor: Mutex<System>,
+    pub login_limiter: LoginRateLimiter,
 }
 
 pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -40,6 +95,7 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
         active_servers: Mutex::new(HashMap::new()),
         session_token: Mutex::new(None),
         system_monitor: Mutex::new(sys),
+        login_limiter: LoginRateLimiter::new(),
     });
 
     // Spawn background speed stats flusher
@@ -114,14 +170,15 @@ async fn auth_middleware(
     let token_lock = state.session_token.lock().await;
     
     if let Some(ref valid_token) = *token_lock {
-        // Check Authorization header
+        // Check Authorization header using constant-time comparison
+        // to prevent timing side-channel attacks on the session token.
         let auth_header = req.headers()
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         
         let expected = format!("Bearer {}", valid_token);
-        if auth_header == expected {
+        if constant_time_eq(auth_header.as_bytes(), expected.as_bytes()) {
             drop(token_lock);
             return Ok(next.run(req).await);
         }
@@ -168,6 +225,15 @@ async fn login_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
+    // Rate limit check: block after 5 failed attempts within 60 seconds
+    if !state.login_limiter.check_and_record() {
+        return Json(LoginResponse {
+            success: false,
+            token: None,
+            message: "Too many login attempts. Please wait 60 seconds.".to_string(),
+        });
+    }
+
     let db_username = db::get_setting(&state.db_path, "admin_username")
         .unwrap_or(Some("admin".to_string()))
         .unwrap_or("admin".to_string());
@@ -175,7 +241,10 @@ async fn login_handler(
         .unwrap_or(None)
         .unwrap_or_default();
 
-    if payload.username == db_username && payload.password == db_password {
+    if constant_time_eq(payload.username.as_bytes(), db_username.as_bytes()) && db::verify_password(&payload.password, &db_password) {
+        // Reset rate limiter on successful login
+        state.login_limiter.reset();
+
         // Generate a cryptographically random session token
         let token = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
         
@@ -315,7 +384,7 @@ async fn start_tunnel_server(state: Arc<AppState>, tunnel: &db::Tunnel, id: i64)
     let proto_spawn = protocol.clone();
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
-        if let Err(e) = tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id).await {
+        if let Err(e) = crate::tunnel::run_server(control_port, public_port, &token, &proto_spawn, decoy, id).await {
             eprintln!("Background tunnel server daemon error: {}", e);
         }
         let _ = db::update_tunnel_status(&state_clone.db_path, id, "inactive");
@@ -380,13 +449,16 @@ async fn deploy_tunnel_handler(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // Auto-start server on Iran side so the control port is listening when Kharej connects!
+    // Auto-start server on Iran side so the control port is listening when Kharej connects.
+    // Note: start_tunnel_server sets status to "active" internally.
     let _ = start_tunnel_server(state.clone(), &tunnel, id).await;
 
-    let db_path_spawn = state.db_path.clone();
-    
-    // Set tunnel status to deploying
+    // Set tunnel status to deploying AFTER starting the tunnel server,
+    // overwriting the "active" status that start_tunnel_server just set.
+    // The deploy task will set the final status on completion.
     let _ = db::update_tunnel_status(&state.db_path, id, "deploying");
+
+    let db_path_spawn = state.db_path.clone();
 
     // Spawn deployment task using tokio::process::Command (non-blocking!)
     tokio::spawn(async move {
@@ -397,7 +469,7 @@ async fn deploy_tunnel_handler(
         
         let password_str = payload.password.unwrap_or_default();
         let result = tokio::process::Command::new("sshpass")
-            .args(&[
+            .args([
                 "-p", &password_str,
                 "ssh",
                 "-o", "StrictHostKeyChecking=no",

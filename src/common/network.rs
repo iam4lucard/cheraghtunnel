@@ -65,5 +65,6 @@ pub fn bind_listener(addr: std::net::SocketAddr) -> io::Result<TcpListener> {
     socket.bind(&addr.into())?;
     socket.listen(128)?;
     let listener: std::net::TcpListener = socket.into();
+    listener.set_nonblocking(true)?;
     TcpListener::from_std(listener)
 }

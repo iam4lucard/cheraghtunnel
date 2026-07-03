@@ -8,5 +8,13 @@ pub fn generate_auth_header(token: &str) -> String {
 #[allow(dead_code)]
 pub fn verify_auth_header(header: &str, token: &str) -> bool {
     let expected = generate_auth_header(token);
-    header == expected
+    // Constant-time comparison to prevent timing side-channel attacks
+    if header.len() != expected.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in header.as_bytes().iter().zip(expected.as_bytes().iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }

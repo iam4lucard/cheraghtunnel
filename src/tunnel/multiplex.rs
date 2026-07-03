@@ -4,8 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Mutex};
 use std::collections::HashMap;
 
-use crate::common::obfuscate::apply_jitter;
-
 pub struct TunnelTraffic {
     pub rx_bytes: AtomicU64,
     pub tx_bytes: AtomicU64,
@@ -27,8 +25,10 @@ pub fn get_traffic_tracker(tunnel_id: i64) -> Arc<TunnelTraffic> {
         .clone()
 }
 
-/// Pipes data bidirectionally between two streams, counting bytes in real-time
-/// and applying dynamic AI Jitter on packet transfer.
+/// Pipes data bidirectionally between two streams, counting bytes in real-time.
+/// Uses a select loop so that when either direction closes (EOF or error),
+/// the relay terminates immediately and both streams are dropped — preventing
+/// connection and task leaks.
 pub async fn pipe_streams_monitored<S1, S2>(
     stream1: S1,
     stream2: S2,
@@ -41,50 +41,42 @@ pub async fn pipe_streams_monitored<S1, S2>(
     let (mut r1, mut w1) = tokio::io::split(stream1);
     let (mut r2, mut w2) = tokio::io::split(stream2);
 
-    let tracker_rx = tracker.clone();
-    let t1 = tokio::spawn(async move {
-        let mut buf = [0u8; 16384];
-        loop {
-            // Apply AI Jitter on read path
-            apply_jitter().await;
-            
-            match r1.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    tracker_rx.rx_bytes.fetch_add(n as u64, Ordering::SeqCst);
-                    if w2.write_all(&buf[..n]).await.is_err() {
-                        break;
+    let mut buf1 = [0u8; 16384];
+    let mut buf2 = [0u8; 16384];
+
+    loop {
+        tokio::select! {
+            result = r1.read(&mut buf1) => {
+                match result {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        tracker.rx_bytes.fetch_add(n as u64, Ordering::SeqCst);
+                        if w2.write_all(&buf1[..n]).await.is_err() {
+                            break;
+                        }
+                        let _ = w2.flush().await;
                     }
-                    let _ = w2.flush().await;
                 }
-                Err(_) => break,
+            }
+            result = r2.read(&mut buf2) => {
+                match result {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        tracker.tx_bytes.fetch_add(n as u64, Ordering::SeqCst);
+                        if w1.write_all(&buf2[..n]).await.is_err() {
+                            break;
+                        }
+                        let _ = w1.flush().await;
+                    }
+                }
             }
         }
-    });
+    }
 
-    let tracker_tx = tracker.clone();
-    let t2 = tokio::spawn(async move {
-        let mut buf = [0u8; 16384];
-        loop {
-            // Apply AI Jitter on write path
-            apply_jitter().await;
-
-            match r2.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    tracker_tx.tx_bytes.fetch_add(n as u64, Ordering::SeqCst);
-                    if w1.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                    let _ = w1.flush().await;
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // Wait for either copy direction to complete, then terminate both
-    let _ = tokio::join!(t1, t2);
+    // Explicitly shut down both write halves so the remote peers get a FIN
+    // and don't hang waiting for data that will never arrive.
+    let _ = w1.shutdown().await;
+    let _ = w2.shutdown().await;
 }
 
 /// Legacy/Direct pipe without monitoring (used for control connections)

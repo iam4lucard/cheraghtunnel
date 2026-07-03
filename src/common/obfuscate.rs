@@ -10,7 +10,7 @@ pub fn add_padding(data: &[u8]) -> Vec<u8> {
     let data_len = data.len();
     
     // Determine random padding size to make it dynamic
-    let target_size = ((data_len + 2 + 15) / 16) * 16 + rng.gen_range(0..4) * 16;
+    let target_size = (data_len + 2).div_ceil(16) * 16 + rng.gen_range(0..4) * 16;
     let padding_len = target_size - (data_len + 2);
     
     let mut padded = Vec::with_capacity(target_size);
@@ -45,6 +45,7 @@ pub fn remove_padding(data: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Dynamic Jitter: Introduces random micro-delays to shape packet timing signature.
 /// Mimics real user interaction flow.
+#[allow(dead_code)]
 pub async fn apply_jitter() {
     // Determine delay without holding ThreadRng across await point
     let delay_opt = {
