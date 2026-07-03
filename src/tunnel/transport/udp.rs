@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
+use rand::Rng;
 
 // Packet types for our custom reliable UDP layer
 const PKT_SYN: u8 = 1;
@@ -247,19 +248,29 @@ impl UdpVirtualStream {
 
 impl UdpVirtualStreamInner {
     fn frame_packet(&self, pkt_type: u8, seq: u32, ack: u32, payload: &[u8]) -> Vec<u8> {
-        let mut raw = Vec::with_capacity(32 + payload.len());
-        
+        let mut raw = Vec::with_capacity(64 + payload.len());
+        let mut rng = rand::thread_rng();
+        let padding_len = rng.gen_range(16..128); // Dynamic random padding size
+
         if self.mode == UdpMode::Halo {
-            raw.extend_from_slice(&[0x00, pkt_type, 0x00, payload.len() as u8]);
+            // Halo (WebRTC Signature): 
+            // [0x00] + [pkt_type] + [payload_len (2)] + [STUN Magic (4)] + [seq (4)] + [ack (4)] + [payload] + [padding]
+            raw.extend_from_slice(&[0x00, pkt_type]);
+            raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
             raw.extend_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
             raw.extend_from_slice(&seq.to_be_bytes());
             raw.extend_from_slice(&ack.to_be_bytes());
             raw.extend_from_slice(payload);
+            for _ in 0..padding_len {
+                raw.push(rng.gen::<u8>());
+            }
             return raw;
         }
 
         if self.mode == UdpMode::Lantern {
-            let total_len = (20 + 9 + payload.len()) as u16;
+            // Lantern (TUN Signature): IP header + [pkt_type] + [seq (4)] + [ack (4)] + [payload_len (2)] + [payload] + [padding]
+            // Calculate Total IP Packet Length
+            let total_len = (20 + 9 + 2 + payload.len() + padding_len) as u16;
             raw.extend_from_slice(&[0x45, 0x00]);
             raw.extend_from_slice(&total_len.to_be_bytes());
             raw.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00]);
@@ -268,14 +279,24 @@ impl UdpVirtualStreamInner {
             raw.push(pkt_type);
             raw.extend_from_slice(&seq.to_be_bytes());
             raw.extend_from_slice(&ack.to_be_bytes());
+            raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
             raw.extend_from_slice(payload);
+            for _ in 0..padding_len {
+                raw.push(rng.gen::<u8>());
+            }
             return raw;
         }
 
+        // Flash / Photon / Hysteria (Obfuscated Reliable UDP):
+        // [pkt_type] + [seq (4)] + [ack (4)] + [payload_len (2)] + [payload] + [padding]
         raw.push(pkt_type);
         raw.extend_from_slice(&seq.to_be_bytes());
         raw.extend_from_slice(&ack.to_be_bytes());
+        raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
         raw.extend_from_slice(payload);
+        for _ in 0..padding_len {
+            raw.push(rng.gen::<u8>());
+        }
         raw
     }
 
@@ -285,30 +306,47 @@ impl UdpVirtualStreamInner {
                 return None;
             }
             let pkt_type = raw[1];
+            let payload_len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
             let seq = u32::from_be_bytes([raw[8], raw[9], raw[10], raw[11]]);
             let ack = u32::from_be_bytes([raw[12], raw[13], raw[14], raw[15]]);
-            let payload = raw[16..].to_vec();
+            if raw.len() < 16 + payload_len {
+                return None;
+            }
+            let payload = raw[16..16 + payload_len].to_vec();
             return Some((pkt_type, seq, ack, payload));
         }
 
         if self.mode == UdpMode::Lantern {
-            if raw.len() < 29 {
+            if raw.len() < 31 {
+                return None;
+            }
+            let total_len = u16::from_be_bytes([raw[2], raw[3]]) as usize;
+            if raw.len() < total_len {
                 return None;
             }
             let pkt_type = raw[20];
             let seq = u32::from_be_bytes([raw[21], raw[22], raw[23], raw[24]]);
             let ack = u32::from_be_bytes([raw[25], raw[26], raw[27], raw[28]]);
-            let payload = raw[29..].to_vec();
+            let payload_len = u16::from_be_bytes([raw[29], raw[30]]) as usize;
+            if raw.len() < 31 + payload_len {
+                return None;
+            }
+            let payload = raw[31..31 + payload_len].to_vec();
             return Some((pkt_type, seq, ack, payload));
         }
 
-        if raw.len() < 9 {
+        // Flash / Photon / Hysteria deframing
+        if raw.len() < 11 {
             return None;
         }
         let pkt_type = raw[0];
         let seq = u32::from_be_bytes([raw[1], raw[2], raw[3], raw[4]]);
         let ack = u32::from_be_bytes([raw[5], raw[6], raw[7], raw[8]]);
-        let payload = raw[9..].to_vec();
+        let payload_len = u16::from_be_bytes([raw[9], raw[10]]) as usize;
+        if raw.len() < 11 + payload_len {
+            return None;
+        }
+        let payload = raw[11..11 + payload_len].to_vec();
         Some((pkt_type, seq, ack, payload))
     }
 
@@ -324,6 +362,22 @@ impl UdpVirtualStreamInner {
             }
             self.tokens -= 1.0;
         }
+
+        // Apply Micro-jitter (Timing Shaper) to evade DPI statistical signature analysis
+        if self.mode == UdpMode::Halo || self.mode == UdpMode::Lantern {
+            let jitter_ms = {
+                let mut rng = rand::thread_rng();
+                if rng.gen_bool(0.15) {
+                    Some(rng.gen_range(1..4))
+                } else {
+                    None
+                }
+            };
+            if let Some(ms) = jitter_ms {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+        }
+
         send_msg(&self.socket, data, self.peer).await
     }
 
