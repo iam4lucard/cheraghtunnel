@@ -10,11 +10,10 @@ import argparse
 from datetime import datetime
 
 def ping_host(host, count=30):
-    print(f"[*] Pinging {host} {count} times to measure raw latency, jitter, and packet loss...")
+    print(f"[*] Pinging {host} {count} times to measure raw network latency...")
     pings = []
     lost = 0
     
-    # Determine ping command based on OS
     param = '-n' if sys.platform.lower() == 'windows' else '-c'
     timeout_param = '-w' if sys.platform.lower() == 'windows' else '-W'
     timeout_val = '1000' if sys.platform.lower() == 'windows' else '1'
@@ -22,7 +21,6 @@ def ping_host(host, count=30):
     for i in range(count):
         start = time.time()
         try:
-            # Run ping command
             cmd = ['ping', param, '1', timeout_param, timeout_val, host]
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             duration = (time.time() - start) * 1000  # ms
@@ -42,7 +40,7 @@ def ping_host(host, count=30):
                 lost += 1
         except Exception as e:
             lost += 1
-        time.sleep(0.05)
+        time.sleep(0.03)
         
     loss_rate = (lost / count) * 100
     if pings:
@@ -54,7 +52,6 @@ def ping_host(host, count=30):
         avg_ping, min_ping, max_ping, jitter = 0, 0, 0, 0
         
     return {
-        "host": host,
         "loss_rate": loss_rate,
         "avg": avg_ping,
         "min": min_ping,
@@ -63,68 +60,63 @@ def ping_host(host, count=30):
         "pings": pings
     }
 
-def test_tcp_port(host, port, count=10, timeout=2.0):
-    latencies = []
+def measure_tunnel_rtt(port, count=15):
+    print(f"[*] Measuring end-to-end RTT through tunnel on port {port} ({count} samples)...")
+    rtts = []
     failed = 0
     
     for _ in range(count):
         start = time.time()
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
-            sock.connect((host, port))
+            sock.settimeout(4.0)
+            
+            # Connect locally (Iran proxy entry point)
+            sock.connect(("127.0.0.1", port))
+            
+            # Send dummy 4-byte payload
+            sock.sendall(b"ping")
+            
+            # Initiate half-close (send FIN). This forces the FIN to travel to Kharej backend.
+            sock.shutdown(socket.SHUT_WR)
+            
+            # Block until Kharej backend closes connection (returns EOF or RST)
+            try:
+                _ = sock.recv(1024)
+            except socket.error:
+                # Connection reset is also a valid RTT signal
+                pass
+                
             duration = (time.time() - start) * 1000  # ms
-            latencies.append(duration)
+            rtts.append(duration)
             sock.close()
         except Exception as e:
             failed += 1
         time.sleep(0.05)
         
     fail_rate = (failed / count) * 100
-    if latencies:
-        avg_lat = statistics.mean(latencies)
-        min_lat = min(latencies)
-        max_lat = max(latencies)
-        jitter = statistics.stdev(latencies) if len(latencies) > 1 else 0
+    if rtts:
+        avg_rtt = statistics.mean(rtts)
+        min_rtt = min(rtts)
+        max_rtt = max(rtts)
+        jitter = statistics.stdev(rtts) if len(rtts) > 1 else 0
     else:
-        avg_lat, min_lat, max_lat, jitter = 0, 0, 0, 0
+        avg_rtt, min_rtt, max_rtt, jitter = 0, 0, 0, 0
         
     return {
-        "host": host,
         "port": port,
         "fail_rate": fail_rate,
-        "avg": avg_lat,
-        "min": min_lat,
-        "max": max_lat,
+        "avg": avg_rtt,
+        "min": min_rtt,
+        "max": max_rtt,
         "jitter": jitter,
-        "latencies": latencies
+        "samples": rtts
     }
-
-def test_tunnel_end_to_end(tunnel_port):
-    print(f"\n[*] Testing End-to-End Tunnel Quality via local port {tunnel_port}...")
-    # Connect to 127.0.0.1:<tunnel_port> which routes through the tunnel
-    res = test_tcp_port("127.0.0.1", tunnel_port, count=20, timeout=3.0)
-    
-    # Try to read SSH banner or check if connection is active
-    banner = "No banner (expected for VMess/Trojan/VLESS protocols)"
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3.0)
-        sock.connect(("127.0.0.1", tunnel_port))
-        # Read up to 100 bytes (e.g. SSH banner)
-        data = sock.recv(100)
-        if data:
-            banner = data.decode('utf-8', errors='ignore').strip()
-        sock.close()
-    except Exception as e:
-        # Many protocols are silent (don't send a banner), which is fine
-        pass
-        
-    return res, banner
 
 def main():
     parser = argparse.ArgumentParser(description="CheraghTunnel Diagnostics")
     parser.add_argument("--tunnel-port", type=int, help="The public port of the tunnel on Iran server to test end-to-end")
+    parser.add_argument("--compare", nargs=2, type=int, metavar=('PORT1', 'PORT2'), help="Compare the quality of two active tunnels on different ports")
     args = parser.parse_args()
     
     print("==================================================")
@@ -134,84 +126,120 @@ def main():
     iran_ip = "62.60.202.4"
     kharej_ip = "91.107.181.217"
     
-    # 1. Test Raw Network Latency & Packet Loss
-    iran_ping = ping_host(iran_ip)
-    kharej_ping = ping_host(kharej_ip)
-    
-    # 2. Test Tunnel End-to-End if port is provided
-    tunnel_res = None
-    banner = None
-    if args.tunnel_port:
-        tunnel_res, banner = test_tunnel_end_to_end(args.tunnel_port)
-    
-    # Generate Markdown Report
-    report_filename = "tunnel_diagnostics.md"
-    
-    report = f"""# CheraghTunnel Diagnostic Report
+    # Run comparison mode if requested
+    if args.compare:
+        port1, port2 = args.compare
+        print(f"[*] Starting Comparison between Tunnel Port {port1} and Tunnel Port {port2}...")
+        
+        # Test raw ping to Kharej first
+        raw_ping = ping_host(kharej_ip, count=20)
+        
+        # Test Tunnel 1 RTT
+        t1_res = measure_tunnel_rtt(port1)
+        
+        # Test Tunnel 2 RTT
+        t2_res = measure_tunnel_rtt(port2)
+        
+        report_filename = "tunnel_comparison.md"
+        
+        report = f"""# Tunnel Quality Comparison Report
 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-## 1. Raw Network Latency & Jitter Analysis (Ping)
-This measures basic network route stability and packet loss.
+## 1. Raw International Route Quality (Iran -> Germany)
+This is the baseline ping of your raw internet routing without a tunnel:
+* **Avg Raw Latency:** `{raw_ping['avg']:.1f}ms`
+* **Raw Route Jitter:** `{raw_ping['jitter']:.1f}ms`
+* **Raw Packet Loss:** `{raw_ping['loss_rate']:.1f}%`
 
-| Host IP / Role | Packet Loss | Min Ping | Avg Ping | Max Ping | Jitter (Fluctuation) | Status |
-| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **{iran_ip}** (Iran Server) | {iran_ping['loss_rate']:.1f}% | {iran_ping['min']:.1f}ms | {iran_ping['avg']:.1f}ms | {iran_ping['max']:.1f}ms | {iran_ping['jitter']:.1f}ms | {"🔴 Critical Loss" if iran_ping['loss_rate'] > 10 else "🟢 Stable"} |
-| **{kharej_ip}** (Kharej Server) | {kharej_ping['loss_rate']:.1f}% | {kharej_ping['min']:.1f}ms | {kharej_ping['avg']:.1f}ms | {kharej_ping['max']:.1f}ms | {kharej_ping['jitter']:.1f}ms | {"🔴 Critical Loss" if kharej_ping['loss_rate'] > 10 else "🟢 Stable"} |
+---
+
+## 2. End-to-End Tunnel Performance Comparison
+This measures connection latency and packet loss **through the tunnels** from the Iran server to the Kharej backend.
+
+| Metric | Tunnel Port {port1} | Tunnel Port {port2} | Winner |
+| :--- | :---: | :---: | :---: |
+| **Connection Success Rate** | {100 - t1_res['fail_rate']:.1f}% | {100 - t2_res['fail_rate']:.1f}% | {"Draw" if t1_res['fail_rate'] == t2_res['fail_rate'] else f"Port {port1}" if t1_res['fail_rate'] < t2_res['fail_rate'] else f"Port {port2}"} |
+| **Minimum Tunnel RTT** | {t1_res['min']:.1f}ms | {t2_res['min']:.1f}ms | {f"Port {port1}" if t1_res['min'] < t2_res['min'] else f"Port {port2}"} |
+| **Average Tunnel RTT** | {t1_res['avg']:.1f}ms | {t2_res['avg']:.1f}ms | {f"Port {port1}" if t1_res['avg'] < t2_res['avg'] else f"Port {port2}"} |
+| **Maximum Tunnel RTT** | {t1_res['max']:.1f}ms | {t2_res['max']:.1f}ms | {f"Port {port1}" if t1_res['max'] < t2_res['max'] else f"Port {port2}"} |
+| **Jitter (Latency Fluctuation)** | {t1_res['jitter']:.1f}ms | {t2_res['jitter']:.1f}ms | {f"Port {port1}" if t1_res['jitter'] < t2_res['jitter'] else f"Port {port2}"} |
+
+---
+
+## 3. Latency Samples (ms)
+Check the individual samples to see if there are sudden spikes or lag:
+
+* **Tunnel Port {port1} Samples:**
+  `{", ".join([f"{p:.1f}" for p in t1_res['samples']])}`
+  
+* **Tunnel Port {port2} Samples:**
+  `{", ".join([f"{p:.1f}" for p in t2_res['samples']])}`
+
+---
+
+## 4. Diagnostics & Verdict
 """
+        # Formulate recommendations/verdict
+        recommendations = []
+        if t1_res['fail_rate'] > t2_res['fail_rate']:
+            recommendations.append(f"- **Port {port2} is more stable:** Port {port1} experienced connection drops ({t1_res['fail_rate']:.1f}%) through the tunnel.")
+        elif t2_res['fail_rate'] > t1_res['fail_rate']:
+            recommendations.append(f"- **Port {port1} is more stable:** Port {port2} experienced connection drops ({t2_res['fail_rate']:.1f}%) through the tunnel.")
+            
+        if t1_res['avg'] < t2_res['avg'] - 10:
+            recommendations.append(f"- **Port {port1} is faster:** Port {port1} has lower average round-trip latency by {t2_res['avg'] - t1_res['avg']:.1f}ms.")
+        elif t2_res['avg'] < t1_res['avg'] - 10:
+            recommendations.append(f"- **Port {port2} is faster:** Port {port2} has lower average round-trip latency by {t1_res['avg'] - t2_res['avg']:.1f}ms.")
+            
+        if t1_res['jitter'] < t2_res['jitter'] - 5:
+            recommendations.append(f"- **Port {port1} is more stable for gaming:** Port {port1} has lower latency fluctuation (jitter) by {t2_res['jitter'] - t1_res['jitter']:.1f}ms.")
+        elif t2_res['jitter'] < t1_res['jitter'] - 5:
+            recommendations.append(f"- **Port {port2} is more stable for gaming:** Port {port2} has lower latency fluctuation (jitter) by {t1_res['jitter'] - t2_res['jitter']:.1f}ms.")
+            
+        if not recommendations:
+            recommendations.append("- **Both tunnels perform similarly:** Latency and stability are neck-and-neck on both ports.")
+            
+        report += "\n".join(recommendations)
+        report += "\n"
+        
+        with open(report_filename, "w") as f:
+            f.write(report)
+            
+        print(f"\n[+] Comparison completed! Report written to: {report_filename}")
+        print("==================================================")
+        return
 
-    if tunnel_res:
-        report += f"""
+    # Basic single-port test mode
+    if args.tunnel_port:
+        raw_ping = ping_host(kharej_ip, count=20)
+        t_res = measure_tunnel_rtt(args.tunnel_port)
+        
+        report_filename = "tunnel_diagnostics.md"
+        report = f"""# CheraghTunnel Diagnostic Report
+Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## 1. Raw International Route Quality (Iran -> Germany)
+This is the baseline ping of your raw internet routing without a tunnel:
+* **Avg Raw Latency:** `{raw_ping['avg']:.1f}ms`
+* **Raw Route Jitter:** `{raw_ping['jitter']:.1f}ms`
+* **Raw Packet Loss:** `{raw_ping['loss_rate']:.1f}%`
+
 ## 2. End-to-End Tunnel Performance (Port {args.tunnel_port})
 This measures connection quality **through** the active CheraghTunnel to the Kharej backend.
 
 * **Target Local Port:** `{args.tunnel_port}` (routes to Kharej backend)
-* **Tunnel Connection Loss Rate:** `{tunnel_res['fail_rate']:.1f}%`
-* **Avg Tunnel Connection Latency:** `{tunnel_res['avg']:.1f}ms`
-* **Tunnel Jitter (Latency Fluctuation):** `{tunnel_res['jitter']:.1f}ms`
-* **End-to-End Banner/Response:** `{banner}`
-* **Tunnel Status:** {"🟢 Stable Connection" if tunnel_res['fail_rate'] == 0 else "🟡 Packet Drops / Instability" if tunnel_res['fail_rate'] < 50 else "🔴 Broken / Closed Tunnel"}
+* **Tunnel Connection Loss Rate:** `{t_res['fail_rate']:.1f}%`
+* **Avg Tunnel Connection Latency:** `{t_res['avg']:.1f}ms`
+* **Tunnel Jitter (Latency Fluctuation):** `{t_res['jitter']:.1f}ms`
+* **Tunnel Status:** {"🟢 Stable Connection" if t_res['fail_rate'] == 0 else "🟡 Packet Drops / Instability" if t_res['fail_rate'] < 50 else "🔴 Broken / Closed Tunnel"}
 
 * **Individual Tunnel Latency Samples (ms):**
-  `{", ".join([f"{p:.1f}" for p in tunnel_res['latencies']])}`
+  `{", ".join([f"{p:.1f}" for p in t_res['samples']])}`
 """
-
-    report += f"""
-## 3. Raw Latency Jitter Histogram
-Below are the individual ping RTT measurements to check for random spikes.
-
-* **Iran Server RTTs (ms):**
-  `{", ".join([f"{p:.1f}" for p in iran_ping['pings']])}`
-  
-* **Kharej Server RTTs (ms):**
-  `{", ".join([f"{p:.1f}" for p in kharej_ping['pings']])}`
-
-## 4. Diagnosis Summary & Recommendations
-"""
-    
-    recommendations = []
-    if iran_ping['loss_rate'] > 0 or kharej_ping['loss_rate'] > 0:
-        recommendations.append("- **Network Packet Loss Detected:** ICMP packet loss exists between you and the servers. This is usually caused by ISP throttling or international network congestion in Iran.")
-        
-    if tunnel_res:
-        if tunnel_res['fail_rate'] > 0:
-            recommendations.append(f"- **Tunnel Packet Drops ({tunnel_res['fail_rate']:.1f}%):** Connections passing through the tunnel are dropping. Since FakeTCP/KCP recovers lost packets, this means the underlying packet loss between Iran and Kharej is extremely high, or the KCP buffer is getting overloaded.")
-        if tunnel_res['jitter'] > 15:
-            recommendations.append(f"- **High Tunnel Jitter ({tunnel_res['jitter']:.1f}ms):** Connection latency through the tunnel is unstable. Check CPU load on both servers or try adjusting the control port to bypass ISP rate limits.")
-    else:
-        recommendations.append("- **Note:** You did not specify a `--tunnel-port`, so end-to-end tunnel performance was not measured.")
-
-    if not recommendations or (tunnel_res and tunnel_res['fail_rate'] == 0 and tunnel_res['jitter'] <= 15 and len(recommendations) == 1):
-        recommendations = ["- **All tests green:** The tunnel connection is clean and stable. No routing or firewall blocks detected."]
-        
-    report += "\n".join(recommendations)
-    report += "\n"
-    
-    with open(report_filename, "w") as f:
-        f.write(report)
-        
-    print(f"\n[+] Diagnostics completed! Report written to: {report_filename}")
-    print("==================================================")
-    print("You can copy the contents of the report file and share them here.")
+        with open(report_filename, "w") as f:
+            f.write(report)
+        print(f"\n[+] Diagnostics completed! Report written to: {report_filename}")
+        print("==================================================")
 
 if __name__ == "__main__":
     main()
