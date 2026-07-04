@@ -557,7 +557,7 @@ mkdir -p /tmp/cheraghtunnel
 echo "Attempting to download pre-compiled CheraghTunnel release binary..."
 DOWNLOAD_SUCCESS=false
 systemctl stop cheragh-node-$TUNNEL_ID 2>/dev/null || true
-if curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iambaradaran/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
+if curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
     mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel
     chmod +x /usr/local/bin/cheraghtunnel
     echo "Successfully downloaded pre-compiled binary! Skipping Rust compilation."
@@ -581,7 +581,7 @@ if [ "$DOWNLOAD_SUCCESS" = false ]; then
 
     echo "Cloning and compiling CheraghTunnel from source..."
     rm -rf /tmp/cheraghtunnel-source
-    git clone https://github.com/iambaradaran/cheraghtunnel.git /tmp/cheraghtunnel-source
+    git clone https://github.com/iam4lucard/cheraghtunnel.git /tmp/cheraghtunnel-source
     cd /tmp/cheraghtunnel-source
     source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
     cargo build --release
