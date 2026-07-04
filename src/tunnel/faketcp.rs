@@ -206,10 +206,12 @@ impl FakeTcpServer {
         let clients = Arc::new(Mutex::new(HashMap::<SocketAddrV4, std::net::UdpSocket>::new()));
         let tx_mutex = Arc::new(Mutex::new(tx));
         let guard_clone = guard.clone();
+        let rt_handle = tokio::runtime::Handle::current();
         
         // Blocking thread for Server FakeTCP RX
         let handle_tx = tx_mutex.clone();
         std::thread::spawn(move || {
+            let _rt_guard = rt_handle.enter();
             let _g = guard_clone;
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
             loop {
