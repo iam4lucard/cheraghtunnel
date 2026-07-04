@@ -7,27 +7,26 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::process::Command;
-use std::sync::Arc;
-use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::net::UdpSocket as AsyncUdpSocket;
 use kcp_tokio::{KcpConfig, KcpListener, KcpStream};
 
 const MTU: usize = 1400;
 
 pub fn apply_iptables_drop(port: u16) {
-    println!("[FakeTCP] Applying iptables drop rule for outgoing RST on port {}...", port);
+    println!("[FakeTCP] Applying iptables drop rule for port {}...", port);
     let _ = Command::new("iptables")
-        .args(["-D", "OUTPUT", "-p", "tcp", "--sport", &port.to_string(), "--tcp-flags", "RST", "RST", "-j", "DROP"])
+        .args(["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
         .status();
     let _ = Command::new("iptables")
-        .args(["-I", "OUTPUT", "-p", "tcp", "--sport", &port.to_string(), "--tcp-flags", "RST", "RST", "-j", "DROP"])
+        .args(["-I", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
         .status();
 }
 
 pub fn remove_iptables_drop(port: u16) {
-    println!("[FakeTCP] Removing iptables drop rule for outgoing RST on port {}...", port);
+    println!("[FakeTCP] Removing iptables drop rule for port {}...", port);
     let _ = Command::new("iptables")
-        .args(["-D", "OUTPUT", "-p", "tcp", "--sport", &port.to_string(), "--tcp-flags", "RST", "RST", "-j", "DROP"])
+        .args(["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
         .status();
 }
 
@@ -99,8 +98,8 @@ impl FakeTcpClient {
     }
 
     pub async fn connect(&mut self, config: KcpConfig) -> Result<KcpStream, String> {
-        let dummy = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
-        dummy.connect((self.remote_ip, self.remote_port)).await.map_err(|e| e.to_string())?;
+        let dummy = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        dummy.connect((self.remote_ip, self.remote_port)).map_err(|e| e.to_string())?;
         self.local_ip = match dummy.local_addr().unwrap().ip() {
             std::net::IpAddr::V4(ipv4) => ipv4,
             _ => return Err("IPv6 not supported for FakeTCP".into()),
@@ -161,8 +160,10 @@ impl FakeTcpClient {
         println!("[FakeTCP Client] Handshake complete!");
 
         // --- 2. Start Proxy ---
-        let udp = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let local_udp = udp.local_addr().unwrap();
+        let std_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let local_udp = std_udp.local_addr().unwrap();
+        std_udp.set_nonblocking(true).unwrap();
+        
         let client_udp_addr = Arc::new(Mutex::new(None::<SocketAddr>));
         
         let remote_ip = self.remote_ip;
@@ -170,10 +171,12 @@ impl FakeTcpClient {
         let local_ip = self.local_ip;
         let local_port = self.local_port;
 
-        let udp_rx = udp.clone();
+        let udp_rx = std_udp.try_clone().unwrap();
         let addr_rx = client_udp_addr.clone();
         let guard_clone = guard.clone();
-        tokio::spawn(async move {
+        
+        // Blocking thread for receiving FakeTCP
+        std::thread::spawn(move || {
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
             let _g = guard_clone;
             loop {
@@ -185,8 +188,8 @@ impl FakeTcpClient {
                             if tcp.get_source() == remote_port && tcp.get_destination() == local_port {
                                 let payload = tcp.payload();
                                 if !payload.is_empty() {
-                                    if let Some(addr) = *addr_rx.lock().await {
-                                        let _ = udp_rx.send_to(payload, addr).await;
+                                    if let Some(addr) = *addr_rx.lock().unwrap() {
+                                        let _ = udp_rx.send_to(payload, addr);
                                     }
                                 }
                             }
@@ -196,15 +199,17 @@ impl FakeTcpClient {
             }
         });
 
-        let udp_tx = udp.clone();
+        let async_udp = AsyncUdpSocket::from_std(std_udp).unwrap();
         let tx_mutex = Arc::new(Mutex::new(tx));
+        
+        // Async task for sending FakeTCP
         tokio::spawn(async move {
             let mut buf = [0u8; MTU];
             let mut seq = client_seq.wrapping_add(1);
             let ack = server_seq.wrapping_add(1);
             loop {
-                if let Ok((n, src_addr)) = udp_tx.recv_from(&mut buf).await {
-                    *client_udp_addr.lock().await = Some(src_addr);
+                if let Ok((n, src_addr)) = async_udp.recv_from(&mut buf).await {
+                    *client_udp_addr.lock().unwrap() = Some(src_addr);
                     
                     let pkt = craft_tcp_ip_packet(
                         local_ip, remote_ip, local_port, remote_port,
@@ -213,7 +218,7 @@ impl FakeTcpClient {
                     
                     let ip = MutableIpv4Packet::owned(pkt).unwrap();
                     seq = seq.wrapping_add(n as u32);
-                    let mut tx_guard = tx_mutex.lock().await;
+                    let mut tx_guard = tx_mutex.lock().unwrap();
                     let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(remote_ip));
                 }
             }
@@ -246,13 +251,13 @@ impl FakeTcpServer {
         
         let local_port = self.local_port;
         
-        // Mapping from Client Public IP+Port to a UDP socket connected to KCP
-        let clients = Arc::new(Mutex::new(HashMap::<SocketAddrV4, Arc<UdpSocket>>::new()));
-        
+        let clients = Arc::new(Mutex::new(HashMap::<SocketAddrV4, std::net::UdpSocket>::new()));
         let tx_mutex = Arc::new(Mutex::new(tx));
         let guard_clone = guard.clone();
         
-        tokio::spawn(async move {
+        // Blocking thread for Server FakeTCP RX
+        let handle_tx = tx_mutex.clone();
+        std::thread::spawn(move || {
             let _g = guard_clone;
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
             loop {
@@ -274,38 +279,37 @@ impl FakeTcpServer {
                                         server_seq, seq.wrapping_add(1), TcpFlags::SYN | TcpFlags::ACK, &[]
                                     );
                                     let ip = MutableIpv4Packet::owned(pkt).unwrap();
-                                    let mut tx_guard = tx_mutex.lock().await;
+                                    let mut tx_guard = handle_tx.lock().unwrap();
                                     let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(*remote_addr.ip()));
                                     continue;
                                 }
 
                                 let payload = tcp.payload();
                                 if !payload.is_empty() {
-                                    let mut clients_map = clients.lock().await;
+                                    let mut clients_map = clients.lock().unwrap();
                                     let udp = if let Some(u) = clients_map.get(&remote_addr) {
-                                        u.clone()
+                                        u.try_clone().unwrap()
                                     } else {
-                                        // New NAT mapping!
-                                        let new_udp = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-                                        new_udp.connect(kcp_local_udp).await.unwrap();
-                                        clients_map.insert(remote_addr, new_udp.clone());
+                                        let new_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+                                        new_udp.connect(kcp_local_udp).unwrap();
+                                        new_udp.set_nonblocking(true).unwrap();
+                                        clients_map.insert(remote_addr, new_udp.try_clone().unwrap());
                                         
-                                        // Start reverse loop for this client
-                                        let reverse_udp = new_udp.clone();
-                                        let reverse_tx = tx_mutex.clone();
+                                        let async_udp = AsyncUdpSocket::from_std(new_udp.try_clone().unwrap()).unwrap();
+                                        let reverse_tx = handle_tx.clone();
                                         
                                         tokio::spawn(async move {
                                             let mut buf = [0u8; MTU];
                                             let mut rseq = 1000u32;
                                             loop {
-                                                if let Ok(n) = reverse_udp.recv(&mut buf).await {
+                                                if let Ok((n, _)) = async_udp.recv_from(&mut buf).await {
                                                     let pkt = craft_tcp_ip_packet(
                                                         dst_ip, *remote_addr.ip(), local_port, remote_addr.port(),
                                                         rseq, 0, TcpFlags::PSH | TcpFlags::ACK, &buf[..n]
                                                     );
                                                     let ip = MutableIpv4Packet::owned(pkt).unwrap();
                                                     rseq = rseq.wrapping_add(n as u32);
-                                                    let mut tx_guard = reverse_tx.lock().await;
+                                                    let mut tx_guard = reverse_tx.lock().unwrap();
                                                     let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(*remote_addr.ip()));
                                                 }
                                             }
@@ -313,7 +317,7 @@ impl FakeTcpServer {
                                         new_udp
                                     };
                                     
-                                    let _ = udp.send(payload).await;
+                                    let _ = udp.send(payload);
                                 }
                             }
                         }
