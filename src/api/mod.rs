@@ -464,23 +464,43 @@ async fn deploy_tunnel_handler(
     tokio::spawn(async move {
         println!("[DEPLOY] Initiating SSH deployment on {}@{}...", payload.username, payload.host);
         
-        let node_url = format!("http://{}/api/tunnels/{}/node-script", payload.panel_host, id);
-        let remote_cmd = format!("curl -sSfL -o /tmp/node.sh {} && bash /tmp/node.sh && rm -f /tmp/node.sh", node_url);
+
         
         let password_str = payload.password.unwrap_or_default();
-        let result = tokio::process::Command::new("sshpass")
-            .args([
-                "-p", &password_str,
-                "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-p", &payload.port.to_string(),
-                &format!("{}@{}", payload.username, payload.host),
-                &remote_cmd
-            ])
-            .output()
-            .await;
+        
+        let iran_ip = payload.panel_host.split(':').next().unwrap_or("127.0.0.1").to_string();
+        let script_content = generate_node_script(&tunnel, id, &iran_ip);
 
-        match result {
+        let mut cmd = tokio::process::Command::new("sshpass");
+        cmd.args([
+            "-p", &password_str,
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-p", &payload.port.to_string(),
+            &format!("{}@{}", payload.username, payload.host),
+            "cat > /tmp/node.sh && bash /tmp/node.sh && rm -f /tmp/node.sh"
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[DEPLOY] Failed to spawn sshpass command: {}", e);
+                let _ = db::update_tunnel_status(&db_path_spawn, id, "error");
+                return;
+            }
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(script_content.as_bytes()).await;
+            let _ = stdin.flush().await;
+            drop(stdin);
+        }
+
+        match child.wait_with_output().await {
             Ok(output) => {
                 if output.status.success() {
                     println!("[DEPLOY] SSH deployment for tunnel {} finished successfully", id);
@@ -501,27 +521,8 @@ async fn deploy_tunnel_handler(
     (StatusCode::OK, Json("Deployment started in background")).into_response()
 }
 
-// Generate Kharej Server Node Installer Script
-async fn node_script_handler(
-    Extension(state): Extension<Arc<AppState>>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
-    let tunnel = match tunnel_opt {
-        Some(t) => t,
-        None => return StatusCode::NOT_FOUND.into_response(),
-    };
-
-    // Get host from request headers to auto-fill Iran server IP
-    let host = headers
-        .get("host")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("127.0.0.1")
-        .split(':')
-        .next()
-        .unwrap_or("127.0.0.1");
-
+// Helper to generate Kharej Server Node Installer Script
+fn generate_node_script(tunnel: &db::Tunnel, id: i64, host: &str) -> String {
     // Add multi-IP list if backup IPs exist
     let mut ips = host.to_string();
     if let Some(ref backups) = tunnel.backup_ips {
@@ -530,7 +531,7 @@ async fn node_script_handler(
         }
     }
 
-    let script = format!(
+    format!(
         r#"#!/bin/bash
 # CheraghTunnel Node Installer Script
 set -e
@@ -617,7 +618,31 @@ systemctl start cheragh-node-$TUNNEL_ID
 echo "Setup completed successfully!"
 "#,
         ips, tunnel.control_port, tunnel.iran_port, tunnel.kharej_port, tunnel.token, tunnel.protocol, id
-    );
+    )
+}
+
+// Generate Kharej Server Node Installer Script Handler
+async fn node_script_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
+    let tunnel = match tunnel_opt {
+        Some(t) => t,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    // Get host from request headers to auto-fill Iran server IP
+    let host = headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("127.0.0.1")
+        .split(':')
+        .next()
+        .unwrap_or("127.0.0.1");
+
+    let script = generate_node_script(&tunnel, id, host);
 
     (
         StatusCode::OK,
