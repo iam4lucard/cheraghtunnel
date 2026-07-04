@@ -44,8 +44,8 @@ where
         loop {
             if !self.read_buf.is_empty() {
                 let n = std::cmp::min(buf.remaining(), self.read_buf.len());
-                let drain = self.read_buf.drain(..n).collect::<Vec<_>>();
-                buf.put_slice(&drain);
+                buf.put_slice(&self.read_buf[..n]);
+                self.read_buf.drain(..n);
                 return Poll::Ready(Ok(()));
             }
 
@@ -158,11 +158,14 @@ where
         // 1. Yield any pending payload bytes
         if !this.payload_buf.is_empty() {
             let n = std::cmp::min(buf.remaining(), this.payload_buf.len());
-            for _ in 0..n {
-                if let Some(b) = this.payload_buf.pop_front() {
-                    buf.put_slice(&[b]);
-                }
+            let (slice1, slice2) = this.payload_buf.as_slices();
+            if slice1.len() >= n {
+                buf.put_slice(&slice1[..n]);
+            } else {
+                buf.put_slice(slice1);
+                buf.put_slice(&slice2[..(n - slice1.len())]);
             }
+            this.payload_buf.drain(..n);
             return Poll::Ready(Ok(()));
         }
 
@@ -207,9 +210,13 @@ where
                     if this.read_buf.len() < total_needed {
                         break;
                     }
-                    let payload = this.read_buf.drain(..payload_len as usize).collect::<Vec<_>>();
-                    this.read_buf.drain(..padding_len as usize); // Discard padding
-                    this.payload_buf.extend(payload);
+                    
+                    let p_len = payload_len as usize;
+                    let pad_len = padding_len as usize;
+                    
+                    // Directly extend payload_buf from the slice of read_buf without allocation
+                    this.payload_buf.extend(&this.read_buf[..p_len]);
+                    this.read_buf.drain(..p_len + pad_len);
                     this.read_state = ReadState::Header;
                 }
             }
@@ -218,11 +225,14 @@ where
         // 4. Yield bytes from payload_buf if populated
         if !this.payload_buf.is_empty() {
             let n = std::cmp::min(buf.remaining(), this.payload_buf.len());
-            for _ in 0..n {
-                if let Some(b) = this.payload_buf.pop_front() {
-                    buf.put_slice(&[b]);
-                }
+            let (slice1, slice2) = this.payload_buf.as_slices();
+            if slice1.len() >= n {
+                buf.put_slice(&slice1[..n]);
+            } else {
+                buf.put_slice(slice1);
+                buf.put_slice(&slice2[..(n - slice1.len())]);
             }
+            this.payload_buf.drain(..n);
             return Poll::Ready(Ok(()));
         }
 
