@@ -108,58 +108,11 @@ impl FakeTcpClient {
 
         let guard = Arc::new(IptablesGuard::new(self.local_port));
 
-        let (mut tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
+        let (tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         
         let client_seq = rand::thread_rng().gen::<u32>();
         
-        // --- 1. TCP Handshake ---
-        println!("[FakeTCP Client] Sending SYN to server...");
-        let syn_pkt = craft_tcp_ip_packet(
-            self.local_ip, self.remote_ip, self.local_port, self.remote_port,
-            client_seq, 0, TcpFlags::SYN, &[]
-        );
-        let ip_syn = MutableIpv4Packet::owned(syn_pkt).unwrap();
-        tx.send_to(ip_syn, std::net::IpAddr::V4(self.remote_ip)).map_err(|e| e.to_string())?;
-
-        let mut server_seq = 0;
-        let mut handshake_done = false;
-
-        // Wait for SYN-ACK
-        {
-            let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
-            let start_time = std::time::Instant::now();
-            while start_time.elapsed().as_secs() < 5 {
-                if let Ok((ipv4, _)) = iter.next() {
-                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp 
-                        && ipv4.get_source() == self.remote_ip && ipv4.get_destination() == self.local_ip {
-                        if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
-                            if tcp.get_source() == self.remote_port && tcp.get_destination() == self.local_port {
-                                if (tcp.get_flags() & (TcpFlags::SYN | TcpFlags::ACK)) == (TcpFlags::SYN | TcpFlags::ACK) {
-                                    server_seq = tcp.get_sequence();
-                                    println!("[FakeTCP Client] Received SYN-ACK. Sending ACK...");
-                                    handshake_done = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if !handshake_done {
-            return Err("FakeTCP Handshake Timeout (No SYN-ACK received)".into());
-        }
-
-        let ack_pkt = craft_tcp_ip_packet(
-            self.local_ip, self.remote_ip, self.local_port, self.remote_port,
-            client_seq.wrapping_add(1), server_seq.wrapping_add(1), TcpFlags::ACK, &[]
-        );
-        let ip_ack = MutableIpv4Packet::owned(ack_pkt).unwrap();
-        tx.send_to(ip_ack, std::net::IpAddr::V4(self.remote_ip)).map_err(|e| e.to_string())?;
-        println!("[FakeTCP Client] Handshake complete!");
-
-        // --- 2. Start Proxy ---
+        // --- Start Proxy (No TCP Handshake, just pure spoofing) ---
         let std_udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let local_udp = std_udp.local_addr().unwrap();
         std_udp.set_nonblocking(true).unwrap();
@@ -206,7 +159,7 @@ impl FakeTcpClient {
         tokio::spawn(async move {
             let mut buf = [0u8; MTU];
             let mut seq = client_seq.wrapping_add(1);
-            let ack = server_seq.wrapping_add(1);
+            let ack = 1000u32;
             loop {
                 if let Ok((n, src_addr)) = async_udp.recv_from(&mut buf).await {
                     *client_udp_addr.lock().unwrap() = Some(src_addr);
@@ -247,7 +200,7 @@ impl FakeTcpServer {
         let kcp_listener = KcpListener::bind(kcp_addr, config).await.map_err(|e| e.to_string())?;
         let kcp_local_udp = *kcp_listener.local_addr();
 
-        let (mut tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
+        let (tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         
         let local_port = self.local_port;
         
@@ -267,22 +220,6 @@ impl FakeTcpServer {
                             if tcp.get_destination() == local_port {
                                 let remote_addr = SocketAddrV4::new(ipv4.get_source(), tcp.get_source());
                                 let dst_ip = ipv4.get_destination();
-                                let flags = tcp.get_flags();
-                                let seq = tcp.get_sequence();
-                                
-                                // Handle TCP Handshake (SYN)
-                                if (flags & TcpFlags::SYN) != 0 && (flags & TcpFlags::ACK) == 0 {
-                                    println!("[FakeTCP Server] Received SYN from {}. Sending SYN-ACK...", remote_addr);
-                                    let server_seq = rand::thread_rng().gen::<u32>();
-                                    let pkt = craft_tcp_ip_packet(
-                                        dst_ip, *remote_addr.ip(), local_port, remote_addr.port(),
-                                        server_seq, seq.wrapping_add(1), TcpFlags::SYN | TcpFlags::ACK, &[]
-                                    );
-                                    let ip = MutableIpv4Packet::owned(pkt).unwrap();
-                                    let mut tx_guard = handle_tx.lock().unwrap();
-                                    let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(*remote_addr.ip()));
-                                    continue;
-                                }
 
                                 let payload = tcp.payload();
                                 if !payload.is_empty() {
