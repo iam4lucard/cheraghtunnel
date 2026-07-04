@@ -17,9 +17,7 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
         .with_interval(Duration::from_secs(5));
     let _ = socket.set_tcp_keepalive(&keepalive);
     
-    // 3. Set optimized TCP buffer sizes (256KB) for high throughput
-    let _ = socket.set_recv_buffer_size(256 * 1024);
-    let _ = socket.set_send_buffer_size(256 * 1024);
+
     
     // 4. Set IP Type of Service (TOS) to Low Delay to prioritize packets on routers
     let _ = socket.set_tos(0x10); // IPTOS_LOWDELAY
