@@ -26,25 +26,10 @@ jobs:
             binary_name: cheraghtunnel
             release_name: cheraghtunnel-linux-arm64
             use_cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary_name: cheraghtunnel.exe
-            release_name: cheraghtunnel-windows-amd64.exe
-            use_cross: false
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary_name: cheraghtunnel
-            release_name: cheraghtunnel-macos-amd64
-            use_cross: false
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: cheraghtunnel
-            release_name: cheraghtunnel-macos-arm64
-            use_cross: false
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -91,8 +76,5 @@ jobs:
             ### 📦 فایل‌های اجرایی (Assets):
             - **Linux (amd64 / Intel / AMD):** `cheraghtunnel-linux-amd64`
             - **Linux (arm64 / Raspberry Pi / Ampere):** `cheraghtunnel-linux-arm64`
-            - **Windows (amd64):** `cheraghtunnel-windows-amd64.exe`
-            - **macOS (Intel):** `cheraghtunnel-macos-amd64`
-            - **macOS (Apple Silicon / M1 / M2 / M3):** `cheraghtunnel-macos-arm64`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
