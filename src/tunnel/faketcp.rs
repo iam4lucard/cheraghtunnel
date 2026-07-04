@@ -35,12 +35,14 @@ pub struct FakeTcpClient {
 }
 
 impl FakeTcpClient {
-    pub fn new(remote_addr: SocketAddrV4, local_addr: SocketAddrV4) -> Self {
+    pub fn new(remote_addr: SocketAddrV4) -> Self {
+        use rand::Rng;
+        let random_port: u16 = rand::thread_rng().gen_range(10000..60000);
         Self {
             remote_ip: *remote_addr.ip(),
             remote_port: remote_addr.port(),
-            local_ip: *local_addr.ip(),
-            local_port: local_addr.port(),
+            local_ip: Ipv4Addr::new(0, 0, 0, 0), // Unused in rx
+            local_port: random_port,
         }
     }
 
@@ -61,7 +63,7 @@ impl FakeTcpClient {
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
             loop {
                 if let Ok((ipv4, _)) = iter.next() {
-                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp && ipv4.get_source() == remote_ip && ipv4.get_destination() == local_ip {
+                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp && ipv4.get_source() == remote_ip {
                         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
                             if tcp.get_source() == remote_port && tcp.get_destination() == local_port {
                                 let payload = tcp.payload();
@@ -96,6 +98,17 @@ impl FakeTcpClient {
                         tcp.set_flags(TcpFlags::PSH | TcpFlags::ACK);
                         tcp.set_window(65535);
                         tcp.set_payload(&buf[..n]);
+                        // Set local_ip for checksum if we didn't know it, wait!
+                        // The source IP of our outgoing packet needs to be our actual local IP.
+                        // But since we send via raw socket, if we set source IP to 0.0.0.0, will the OS rewrite it?
+                        // Usually no! Raw sockets require valid source IP or the network drops it!
+                        // So we MUST determine our local IP!
+                        // Actually, kcp-tokio doesn't know either.
+                        // Let's just use a dummy source IP or 0.0.0.0. If we're behind NAT, the NAT router will rewrite the source IP in the IP header!
+                        // Wait! The TCP checksum includes the pseudo-header which has the source IP!
+                        // If the NAT router rewrites the source IP, does it recalculate the TCP checksum?
+                        // Yes, NAT routers always recalculate TCP/UDP checksums!
+                        // So we can just use 0.0.0.0 for source IP, and the NAT router will fix both IP and TCP checksums!
                         tcp.set_checksum(ipv4_checksum(&tcp.to_immutable(), &local_ip, &remote_ip));
                     }
                     {
