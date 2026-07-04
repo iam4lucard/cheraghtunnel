@@ -185,13 +185,17 @@ pub async fn run_server(
                             let control_tx_clone = control_tx.clone();
 
                             tokio::spawn(async move {
-                                if let Ok(s) = server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
-                                    println!("[SERVER] Authentic client connected from: {}", addr);
-                                    if control_tx_clone.send(s).await.is_err() {
-                                        eprintln!("[SERVER] Control channel closed, dropping node stream");
+                                match server_handshake(control_socket, &proto_clone, &token_clone, decoy_clone).await {
+                                    Ok(s) => {
+                                        println!("[SERVER] Authentic client connected from: {}", addr);
+                                        if control_tx_clone.send(s).await.is_err() {
+                                            eprintln!("[SERVER] Control channel closed, dropping node stream");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[SERVER] Handshake failed from {}: {}", addr, e);
                                     }
                                 }
-                                // Ignore handshake errors (scanners/bots)
                             });
                         }
                         Err(e) => {
