@@ -1,5 +1,5 @@
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
+use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet, checksum as ipv4_header_checksum};
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket, ipv4_checksum};
 use pnet::packet::{MutablePacket, Packet};
 use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol};
@@ -48,6 +48,39 @@ impl Drop for IptablesGuard {
     }
 }
 
+fn craft_tcp_ip_packet(
+    src_ip: Ipv4Addr, dst_ip: Ipv4Addr,
+    src_port: u16, dst_port: u16,
+    seq: u32, ack: u32, flags: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut ip_buffer = vec![0u8; 40 + payload.len()];
+    {
+        let mut tcp = MutableTcpPacket::new(&mut ip_buffer[20..]).unwrap();
+        tcp.set_source(src_port);
+        tcp.set_destination(dst_port);
+        tcp.set_sequence(seq);
+        tcp.set_acknowledgement(ack);
+        tcp.set_data_offset(5);
+        tcp.set_flags(flags);
+        tcp.set_window(65535);
+        tcp.set_payload(payload);
+        tcp.set_checksum(ipv4_checksum(&tcp.to_immutable(), &src_ip, &dst_ip));
+    }
+    {
+        let mut ip = MutableIpv4Packet::new(&mut ip_buffer).unwrap();
+        ip.set_version(4);
+        ip.set_header_length(5);
+        ip.set_total_length((40 + payload.len()) as u16);
+        ip.set_ttl(64);
+        ip.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
+        ip.set_source(src_ip);
+        ip.set_destination(dst_ip);
+        ip.set_checksum(ipv4_header_checksum(&ip.to_immutable()));
+    }
+    ip_buffer
+}
+
 pub struct FakeTcpClient {
     remote_ip: Ipv4Addr,
     remote_port: u16,
@@ -66,37 +99,88 @@ impl FakeTcpClient {
     }
 
     pub async fn connect(&mut self, config: KcpConfig) -> Result<KcpStream, String> {
-        // Discover correct local IP
         let dummy = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
         dummy.connect((self.remote_ip, self.remote_port)).await.map_err(|e| e.to_string())?;
         self.local_ip = match dummy.local_addr().unwrap().ip() {
             std::net::IpAddr::V4(ipv4) => ipv4,
             _ => return Err("IPv6 not supported for FakeTCP".into()),
         };
-        // Random ephemeral port
         self.local_port = rand::thread_rng().gen_range(40000..65000) as u16;
 
         let guard = Arc::new(IptablesGuard::new(self.local_port));
 
         let (mut tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
+        
+        let client_seq = rand::thread_rng().gen::<u32>();
+        
+        // --- 1. TCP Handshake ---
+        println!("[FakeTCP Client] Sending SYN to server...");
+        let syn_pkt = craft_tcp_ip_packet(
+            self.local_ip, self.remote_ip, self.local_port, self.remote_port,
+            client_seq, 0, TcpFlags::SYN, &[]
+        );
+        let ip_syn = MutableIpv4Packet::owned(syn_pkt).unwrap();
+        tx.send_to(ip_syn, std::net::IpAddr::V4(self.remote_ip)).map_err(|e| e.to_string())?;
+
+        let mut server_seq = 0;
+        let mut handshake_done = false;
+
+        // Wait for SYN-ACK
+        {
+            let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
+            let start_time = std::time::Instant::now();
+            while start_time.elapsed().as_secs() < 5 {
+                if let Ok((ipv4, _)) = iter.next() {
+                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp 
+                        && ipv4.get_source() == self.remote_ip && ipv4.get_destination() == self.local_ip {
+                        if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
+                            if tcp.get_source() == self.remote_port && tcp.get_destination() == self.local_port {
+                                if (tcp.get_flags() & (TcpFlags::SYN | TcpFlags::ACK)) == (TcpFlags::SYN | TcpFlags::ACK) {
+                                    server_seq = tcp.get_sequence();
+                                    println!("[FakeTCP Client] Received SYN-ACK. Sending ACK...");
+                                    handshake_done = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !handshake_done {
+            return Err("FakeTCP Handshake Timeout (No SYN-ACK received)".into());
+        }
+
+        let ack_pkt = craft_tcp_ip_packet(
+            self.local_ip, self.remote_ip, self.local_port, self.remote_port,
+            client_seq.wrapping_add(1), server_seq.wrapping_add(1), TcpFlags::ACK, &[]
+        );
+        let ip_ack = MutableIpv4Packet::owned(ack_pkt).unwrap();
+        tx.send_to(ip_ack, std::net::IpAddr::V4(self.remote_ip)).map_err(|e| e.to_string())?;
+        println!("[FakeTCP Client] Handshake complete!");
+
+        // --- 2. Start Proxy ---
         let udp = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let local_udp = udp.local_addr().unwrap();
         let client_udp_addr = Arc::new(Mutex::new(None::<SocketAddr>));
+        
         let remote_ip = self.remote_ip;
         let remote_port = self.remote_port;
         let local_ip = self.local_ip;
         let local_port = self.local_port;
 
-        // Task 1: Read FakeTCP -> Forward to KcpStream UDP
         let udp_rx = udp.clone();
         let addr_rx = client_udp_addr.clone();
         let guard_clone = guard.clone();
         tokio::spawn(async move {
-            let _g = guard_clone;
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
+            let _g = guard_clone;
             loop {
                 if let Ok((ipv4, _)) = iter.next() {
-                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp && ipv4.get_source() == remote_ip && ipv4.get_destination() == local_ip {
+                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp 
+                        && ipv4.get_source() == remote_ip && ipv4.get_destination() == local_ip 
+                    {
                         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
                             if tcp.get_source() == remote_port && tcp.get_destination() == local_port {
                                 let payload = tcp.payload();
@@ -116,37 +200,21 @@ impl FakeTcpClient {
         let tx_mutex = Arc::new(Mutex::new(tx));
         tokio::spawn(async move {
             let mut buf = [0u8; MTU];
-            let mut seq = 1000u32;
+            let mut seq = client_seq.wrapping_add(1);
+            let ack = server_seq.wrapping_add(1);
             loop {
                 if let Ok((n, src_addr)) = udp_tx.recv_from(&mut buf).await {
                     *client_udp_addr.lock().await = Some(src_addr);
-                    let mut ip_buffer = vec![0u8; 40 + n];
-                    {
-                        let mut tcp = MutableTcpPacket::new(&mut ip_buffer[20..]).unwrap();
-                        tcp.set_source(local_port);
-                        tcp.set_destination(remote_port);
-                        tcp.set_sequence(seq);
-                        tcp.set_acknowledgement(1000);
-                        tcp.set_data_offset(5);
-                        tcp.set_flags(TcpFlags::PSH | TcpFlags::ACK);
-                        tcp.set_window(65535);
-                        tcp.set_payload(&buf[..n]);
-                        tcp.set_checksum(ipv4_checksum(&tcp.to_immutable(), &local_ip, &remote_ip));
-                    }
-                    {
-                        let mut ip = MutableIpv4Packet::new(&mut ip_buffer).unwrap();
-                        ip.set_version(4);
-                        ip.set_header_length(5);
-                        ip.set_total_length((40 + n) as u16);
-                        ip.set_ttl(64);
-                        ip.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
-                        ip.set_source(local_ip);
-                        ip.set_destination(remote_ip);
-                        ip.set_checksum(pnet::packet::ipv4::checksum(&ip.to_immutable()));
-                        seq = seq.wrapping_add(n as u32);
-                        let mut tx_guard = tx_mutex.lock().await;
-                        let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(remote_ip));
-                    }
+                    
+                    let pkt = craft_tcp_ip_packet(
+                        local_ip, remote_ip, local_port, remote_port,
+                        seq, ack, TcpFlags::PSH | TcpFlags::ACK, &buf[..n]
+                    );
+                    
+                    let ip = MutableIpv4Packet::owned(pkt).unwrap();
+                    seq = seq.wrapping_add(n as u32);
+                    let mut tx_guard = tx_mutex.lock().await;
+                    let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(remote_ip));
                 }
             }
         });
@@ -155,15 +223,17 @@ impl FakeTcpClient {
     }
 }
 
+// -----------------------------------------------------------------------------
+// SERVER
+// -----------------------------------------------------------------------------
+
 pub struct FakeTcpServer {
     local_port: u16,
 }
 
 impl FakeTcpServer {
     pub fn new(local_port: u16) -> Self {
-        Self {
-            local_port,
-        }
+        Self { local_port }
     }
 
     pub async fn bind(&self, config: KcpConfig) -> Result<KcpListener, String> {
@@ -175,14 +245,13 @@ impl FakeTcpServer {
         let (mut tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         
         let local_port = self.local_port;
+        
+        // Mapping from Client Public IP+Port to a UDP socket connected to KCP
         let clients = Arc::new(Mutex::new(HashMap::<SocketAddrV4, Arc<UdpSocket>>::new()));
         
         let tx_mutex = Arc::new(Mutex::new(tx));
-        
-        let clients_clone = clients.clone();
-        let tx_clone = tx_mutex.clone();
-        
         let guard_clone = guard.clone();
+        
         tokio::spawn(async move {
             let _g = guard_clone;
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
@@ -191,12 +260,28 @@ impl FakeTcpServer {
                     if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
                         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
                             if tcp.get_destination() == local_port {
+                                let remote_addr = SocketAddrV4::new(ipv4.get_source(), tcp.get_source());
+                                let dst_ip = ipv4.get_destination();
+                                let flags = tcp.get_flags();
+                                let seq = tcp.get_sequence();
+                                
+                                // Handle TCP Handshake (SYN)
+                                if (flags & TcpFlags::SYN) != 0 && (flags & TcpFlags::ACK) == 0 {
+                                    println!("[FakeTCP Server] Received SYN from {}. Sending SYN-ACK...", remote_addr);
+                                    let server_seq = rand::thread_rng().gen::<u32>();
+                                    let pkt = craft_tcp_ip_packet(
+                                        dst_ip, *remote_addr.ip(), local_port, remote_addr.port(),
+                                        server_seq, seq.wrapping_add(1), TcpFlags::SYN | TcpFlags::ACK, &[]
+                                    );
+                                    let ip = MutableIpv4Packet::owned(pkt).unwrap();
+                                    let mut tx_guard = tx_mutex.lock().await;
+                                    let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(*remote_addr.ip()));
+                                    continue;
+                                }
+
                                 let payload = tcp.payload();
                                 if !payload.is_empty() {
-                                    let remote_addr = SocketAddrV4::new(ipv4.get_source(), tcp.get_source());
-                                    let dst_ip = ipv4.get_destination();
-                                    
-                                    let mut clients_map = clients_clone.lock().await;
+                                    let mut clients_map = clients.lock().await;
                                     let udp = if let Some(u) = clients_map.get(&remote_addr) {
                                         u.clone()
                                     } else {
@@ -207,39 +292,21 @@ impl FakeTcpServer {
                                         
                                         // Start reverse loop for this client
                                         let reverse_udp = new_udp.clone();
-                                        let reverse_tx = tx_clone.clone();
+                                        let reverse_tx = tx_mutex.clone();
+                                        
                                         tokio::spawn(async move {
                                             let mut buf = [0u8; MTU];
-                                            let mut seq = 1000u32;
+                                            let mut rseq = 1000u32;
                                             loop {
                                                 if let Ok(n) = reverse_udp.recv(&mut buf).await {
-                                                    let mut ip_buffer = vec![0u8; 40 + n];
-                                                    {
-                                                        let mut t = MutableTcpPacket::new(&mut ip_buffer[20..]).unwrap();
-                                                        t.set_source(local_port);
-                                                        t.set_destination(remote_addr.port());
-                                                        t.set_sequence(seq);
-                                                        t.set_acknowledgement(1000);
-                                                        t.set_data_offset(5);
-                                                        t.set_flags(TcpFlags::PSH | TcpFlags::ACK);
-                                                        t.set_window(65535);
-                                                        t.set_payload(&buf[..n]);
-                                                        t.set_checksum(ipv4_checksum(&t.to_immutable(), &dst_ip, remote_addr.ip()));
-                                                    }
-                                                    {
-                                                        let mut i = MutableIpv4Packet::new(&mut ip_buffer).unwrap();
-                                                        i.set_version(4);
-                                                        i.set_header_length(5);
-                                                        i.set_total_length((40 + n) as u16);
-                                                        i.set_ttl(64);
-                                                        i.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
-                                                        i.set_source(dst_ip);
-                                                        i.set_destination(*remote_addr.ip());
-                                                        i.set_checksum(pnet::packet::ipv4::checksum(&i.to_immutable()));
-                                                        seq = seq.wrapping_add(n as u32);
-                                                        let mut tx_guard = reverse_tx.lock().await;
-                                                        let _ = tx_guard.send_to(i, std::net::IpAddr::V4(*remote_addr.ip()));
-                                                    }
+                                                    let pkt = craft_tcp_ip_packet(
+                                                        dst_ip, *remote_addr.ip(), local_port, remote_addr.port(),
+                                                        rseq, 0, TcpFlags::PSH | TcpFlags::ACK, &buf[..n]
+                                                    );
+                                                    let ip = MutableIpv4Packet::owned(pkt).unwrap();
+                                                    rseq = rseq.wrapping_add(n as u32);
+                                                    let mut tx_guard = reverse_tx.lock().await;
+                                                    let _ = tx_guard.send_to(ip, std::net::IpAddr::V4(*remote_addr.ip()));
                                                 }
                                             }
                                         });
