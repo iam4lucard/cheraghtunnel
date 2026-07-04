@@ -304,7 +304,7 @@ pub async fn run_client(
         let mut control_socket = if is_faketcp_protocol(protocol) {
             println!("[CLIENT] Connecting via FakeTCP (KCP) to {}...", control_addr);
             let config = kcp_tokio::KcpConfig::new().turbo_mode().stream_mode(true);
-            let client = crate::tunnel::faketcp::FakeTcpClient::new(control_addr.parse().unwrap());
+            let mut client = crate::tunnel::faketcp::FakeTcpClient::new(control_addr.parse().unwrap());
             
             match client.connect(config).await {
                 Ok(mut s) => {

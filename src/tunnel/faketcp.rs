@@ -3,6 +3,7 @@ use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket, ipv4_checksum};
 use pnet::packet::{MutablePacket, Packet};
 use pnet::transport::{transport_channel, TransportChannelType, TransportProtocol};
+use rand::Rng;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::process::Command;
@@ -16,6 +17,9 @@ const MTU: usize = 1400;
 pub fn apply_iptables_drop(port: u16) {
     println!("[FakeTCP] Applying iptables drop rule for port {}...", port);
     let _ = Command::new("iptables")
+        .args(["-D", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
+        .status();
+    let _ = Command::new("iptables")
         .args(["-I", "INPUT", "-p", "tcp", "--dport", &port.to_string(), "-j", "DROP"])
         .status();
 }
@@ -27,6 +31,23 @@ pub fn remove_iptables_drop(port: u16) {
         .status();
 }
 
+pub struct IptablesGuard {
+    port: u16,
+}
+
+impl IptablesGuard {
+    pub fn new(port: u16) -> Self {
+        apply_iptables_drop(port);
+        Self { port }
+    }
+}
+
+impl Drop for IptablesGuard {
+    fn drop(&mut self) {
+        remove_iptables_drop(self.port);
+    }
+}
+
 pub struct FakeTcpClient {
     remote_ip: Ipv4Addr,
     remote_port: u16,
@@ -36,18 +57,27 @@ pub struct FakeTcpClient {
 
 impl FakeTcpClient {
     pub fn new(remote_addr: SocketAddrV4) -> Self {
-        use rand::Rng;
-        let random_port: u16 = rand::thread_rng().gen_range(10000..60000);
         Self {
             remote_ip: *remote_addr.ip(),
             remote_port: remote_addr.port(),
-            local_ip: Ipv4Addr::new(0, 0, 0, 0), // Unused in rx
-            local_port: random_port,
+            local_ip: Ipv4Addr::new(0, 0, 0, 0),
+            local_port: 0,
         }
     }
 
-    pub async fn connect(&self, config: KcpConfig) -> Result<KcpStream, String> {
-        apply_iptables_drop(self.local_port);
+    pub async fn connect(&mut self, config: KcpConfig) -> Result<KcpStream, String> {
+        // Discover correct local IP
+        let dummy = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| e.to_string())?;
+        dummy.connect((self.remote_ip, self.remote_port)).await.map_err(|e| e.to_string())?;
+        self.local_ip = match dummy.local_addr().unwrap().ip() {
+            std::net::IpAddr::V4(ipv4) => ipv4,
+            _ => return Err("IPv6 not supported for FakeTCP".into()),
+        };
+        // Random ephemeral port
+        self.local_port = rand::thread_rng().gen_range(40000..65000) as u16;
+
+        let guard = Arc::new(IptablesGuard::new(self.local_port));
+
         let (mut tx, mut rx) = transport_channel(65535, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         let udp = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let local_udp = udp.local_addr().unwrap();
@@ -57,13 +87,16 @@ impl FakeTcpClient {
         let local_ip = self.local_ip;
         let local_port = self.local_port;
 
+        // Task 1: Read FakeTCP -> Forward to KcpStream UDP
         let udp_rx = udp.clone();
         let addr_rx = client_udp_addr.clone();
+        let guard_clone = guard.clone();
         tokio::spawn(async move {
+            let _g = guard_clone;
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
             loop {
                 if let Ok((ipv4, _)) = iter.next() {
-                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp && ipv4.get_source() == remote_ip {
+                    if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp && ipv4.get_source() == remote_ip && ipv4.get_destination() == local_ip {
                         if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
                             if tcp.get_source() == remote_port && tcp.get_destination() == local_port {
                                 let payload = tcp.payload();
@@ -98,17 +131,6 @@ impl FakeTcpClient {
                         tcp.set_flags(TcpFlags::PSH | TcpFlags::ACK);
                         tcp.set_window(65535);
                         tcp.set_payload(&buf[..n]);
-                        // Set local_ip for checksum if we didn't know it, wait!
-                        // The source IP of our outgoing packet needs to be our actual local IP.
-                        // But since we send via raw socket, if we set source IP to 0.0.0.0, will the OS rewrite it?
-                        // Usually no! Raw sockets require valid source IP or the network drops it!
-                        // So we MUST determine our local IP!
-                        // Actually, kcp-tokio doesn't know either.
-                        // Let's just use a dummy source IP or 0.0.0.0. If we're behind NAT, the NAT router will rewrite the source IP in the IP header!
-                        // Wait! The TCP checksum includes the pseudo-header which has the source IP!
-                        // If the NAT router rewrites the source IP, does it recalculate the TCP checksum?
-                        // Yes, NAT routers always recalculate TCP/UDP checksums!
-                        // So we can just use 0.0.0.0 for source IP, and the NAT router will fix both IP and TCP checksums!
                         tcp.set_checksum(ipv4_checksum(&tcp.to_immutable(), &local_ip, &remote_ip));
                     }
                     {
@@ -145,7 +167,7 @@ impl FakeTcpServer {
     }
 
     pub async fn bind(&self, config: KcpConfig) -> Result<KcpListener, String> {
-        apply_iptables_drop(self.local_port);
+        let guard = Arc::new(IptablesGuard::new(self.local_port));
         let kcp_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let kcp_listener = KcpListener::bind(kcp_addr, config).await.map_err(|e| e.to_string())?;
         let kcp_local_udp = *kcp_listener.local_addr();
@@ -160,7 +182,9 @@ impl FakeTcpServer {
         let clients_clone = clients.clone();
         let tx_clone = tx_mutex.clone();
         
+        let guard_clone = guard.clone();
         tokio::spawn(async move {
+            let _g = guard_clone;
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
             loop {
                 if let Ok((ipv4, _)) = iter.next() {
