@@ -133,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Node Deploy Custom Fields Toggle
-    document.getElementById('deploy-kharej-select');
+    const deployKharejSelect = document.getElementById('deploy-kharej-select');
     const deployIranSelect = document.getElementById('deploy-iran-select');
     
     document.getElementById('open-add-node-modal').addEventListener('click', () => {
