@@ -651,7 +651,7 @@ pub async fn run_client(
 
                     TransportStream::Udp(stream)
                 } else {
-                    let tcp_socket = match TcpStream::connect(format!("{}:{}", current_ip, control_port)).await {
+                    let tcp_socket = match TcpStream::connect(format!("{}:{}", current_ip, active_control_port)).await {
                         Ok(s) => {
                             let _ = crate::common::network::optimize_socket(&s);
                             s
