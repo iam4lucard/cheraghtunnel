@@ -447,12 +447,12 @@ async fn toggle_tunnel_handler(
         tokio::spawn(async move {
             if let Some(i_id) = tunnel.iran_node_id {
                 if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
-                    let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-server-{}", tunnel.id.unwrap())).await;
+                    let _ = run_ssh_command(&n, &format!("systemctl disable cheragh-server-{} && systemctl stop cheragh-server-{}", tunnel.id.unwrap(), tunnel.id.unwrap())).await;
                 }
             }
             if let Some(k_id) = tunnel.kharej_node_id {
                 if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
-                    let _ = run_ssh_command(&n, &format!("systemctl stop cheragh-node-{}", tunnel.id.unwrap())).await;
+                    let _ = run_ssh_command(&n, &format!("systemctl disable cheragh-node-{} && systemctl stop cheragh-node-{}", tunnel.id.unwrap(), tunnel.id.unwrap())).await;
                 }
             }
         });
