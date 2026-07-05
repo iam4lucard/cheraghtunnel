@@ -511,8 +511,8 @@ async function showEditModal(id) {
 window.toggleTunnel = toggleTunnel;
 window.deleteTunnel = deleteTunnel;
 window.deleteNode = deleteNode;
-window.showNodeCommand = showNodeCommand;
 window.showEditModal = showEditModal;
+window.showTelemetry = showTelemetry;
 
 
 // Edit form submit & token helpers
