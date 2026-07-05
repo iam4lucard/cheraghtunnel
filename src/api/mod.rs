@@ -168,16 +168,23 @@ pub async fn run_panel(port: u16, db_path: PathBuf) -> Result<(), Box<dyn std::e
                                         let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
                                         drop(stream); // Close test stream immediately
                                         let _ = db::insert_telemetry(&state_tel.db_path, id, rtt_ms, 0.0);
+                                        
+                                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(id);
+                                        tracker.rtt_ms.store(rtt_ms as u32, std::sync::atomic::Ordering::Relaxed);
                                     }
                                     _ => {
                                         // Ping failed or timed out, log 100% packet loss
                                         let _ = db::insert_telemetry(&state_tel.db_path, id, 999.0, 100.0);
+                                        let tracker = crate::tunnel::multiplex::get_traffic_tracker(id);
+                                        tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
                             } else {
                                 drop(pool);
                                 // No nodes active in the pool yet, record 100% loss
                                 let _ = db::insert_telemetry(&state_tel.db_path, id, 999.0, 100.0);
+                                let tracker = crate::tunnel::multiplex::get_traffic_tracker(id);
+                                tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
                     }
@@ -695,8 +702,8 @@ echo "Attempting to download pre-compiled CheraghTunnel release binary..."
 DOWNLOAD_SUCCESS=false
 systemctl stop cheragh-node-$TUNNEL_ID 2>/dev/null || true
 if curl -sSfL -o /tmp/cheraghtunnel-new "https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64"; then
-    mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel
-    chmod +x /usr/local/bin/cheraghtunnel
+    mv /tmp/cheraghtunnel-new /usr/local/bin/cheraghtunnel-$TUNNEL_ID
+    chmod +x /usr/local/bin/cheraghtunnel-$TUNNEL_ID
     echo "Successfully downloaded pre-compiled binary! Skipping Rust compilation."
     DOWNLOAD_SUCCESS=true
 else
@@ -722,8 +729,8 @@ if [ "$DOWNLOAD_SUCCESS" = false ]; then
     cd /tmp/cheraghtunnel-source
     source $HOME/.cargo/env 2>/dev/null || . $HOME/.cargo/env 2>/dev/null || true
     cargo build --release
-    mv target/release/cheraghtunnel /usr/local/bin/cheraghtunnel
-    chmod +x /usr/local/bin/cheraghtunnel
+    mv target/release/cheraghtunnel /usr/local/bin/cheraghtunnel-$TUNNEL_ID
+    chmod +x /usr/local/bin/cheraghtunnel-$TUNNEL_ID
     cd - > /dev/null
     rm -rf /tmp/cheraghtunnel-source
 else
@@ -740,7 +747,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/cheraghtunnel client -s $IRAN_IP -c $CONTROL_PORT -p $PUBLIC_PORT -l 127.0.0.1:$LOCAL_PORT -t $TOKEN --protocol $PROTOCOL --tunnel-id $TUNNEL_ID --decoy "$DECOY"
+ExecStart=/usr/local/bin/cheraghtunnel-$TUNNEL_ID client -s $IRAN_IP -c $CONTROL_PORT -p $PUBLIC_PORT -l 127.0.0.1:$LOCAL_PORT -t $TOKEN --protocol $PROTOCOL --tunnel-id $TUNNEL_ID --decoy "$DECOY"
 Restart=always
 User=root
 

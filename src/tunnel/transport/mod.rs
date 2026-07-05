@@ -526,6 +526,115 @@ fn get_client_tls_config() -> Arc<rustls::ClientConfig> {
 // Handshake verification constants
 const PSK_HEADER_PREFIX: &str = "Cheragh-Auth ";
 
+fn is_older(client: &str, server: &str) -> bool {
+    let c_parts: Vec<u32> = client.split('.').map(|s| s.parse().unwrap_or(0)).collect();
+    let s_parts: Vec<u32> = server.split('.').map(|s| s.parse().unwrap_or(0)).collect();
+    for i in 0..std::cmp::max(c_parts.len(), s_parts.len()) {
+        let c_val = *c_parts.get(i).unwrap_or(&0);
+        let s_val = *s_parts.get(i).unwrap_or(&0);
+        if c_val < s_val {
+            return true;
+        } else if c_val > s_val {
+            return false;
+        }
+    }
+    false
+}
+
+pub async fn perform_client_upgrade_check<S>(
+    stream: &mut S,
+    token: &str,
+) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let auth = format!("Cheragh-Auth {} v{}\n", token, env!("CARGO_PKG_VERSION"));
+    stream.write_all(auth.as_bytes()).await?;
+    stream.flush().await?;
+    
+    let mut resp = [0u8; 3];
+    stream.read_exact(&mut resp).await?;
+    if &resp == b"UPG" {
+        let mut remaining = [0u8; 5];
+        stream.read_exact(&mut remaining).await?;
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut exe_bytes = vec![0u8; len];
+        stream.read_exact(&mut exe_bytes).await?;
+        
+        if let Ok(exe_path) = std::env::current_exe() {
+            let tmp_path = exe_path.with_extension("tmp");
+            std::fs::write(&tmp_path, &exe_bytes)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755));
+            }
+            std::fs::rename(&tmp_path, &exe_path)?;
+            println!("[CLIENT] Upgrade downloaded successfully. Restarting process...");
+            let args: Vec<String> = std::env::args().collect();
+            let _ = std::process::Command::new(&exe_path)
+                .args(&args[1..])
+                .spawn();
+            std::process::exit(0);
+        }
+    } else if &resp == b"ACK" {
+        return Ok(());
+    }
+    Err("Handshake failed".into())
+}
+
+pub async fn perform_server_handshake_check<S>(
+    stream: &mut S,
+    token: &str,
+) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stream.read_exact(&mut byte).await?;
+        if byte[0] == b'\n' {
+            break;
+        }
+        buf.push(byte[0]);
+        if buf.len() > 200 {
+            return Err("Handshake too long".into());
+        }
+    }
+    let auth = String::from_utf8_lossy(&buf);
+    let expected_prefix = format!("Cheragh-Auth {}", token);
+    if !auth.starts_with(&expected_prefix) {
+        return Err("Authentication failed".into());
+    }
+    
+    let parts: Vec<&str> = auth.split_whitespace().collect();
+    if parts.len() >= 3 {
+        let client_ver = parts[2].trim_start_matches('v');
+        let server_ver = env!("CARGO_PKG_VERSION");
+        if is_older(client_ver, server_ver) {
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Ok(exe_bytes) = std::fs::read(exe_path) {
+                    stream.write_all(b"UPG").await?;
+                    stream.write_all(b"RADE\n").await?;
+                    stream.write_all(&(exe_bytes.len() as u32).to_be_bytes()).await?;
+                    stream.write_all(&exe_bytes).await?;
+                    stream.flush().await?;
+                    return Err("Client upgrade triggered".into());
+                }
+            }
+        }
+    }
+    
+    stream.write_all(b"ACK").await?;
+    stream.flush().await?;
+    Ok(())
+}
+
 // Helper to construct a standard TLS 1.2 ClientHello binary packet spoofing SNI
 fn build_tls_client_hello(decoy: &str, token: &str) -> Vec<u8> {
     use sha2::{Sha256, Digest};
@@ -619,14 +728,7 @@ pub async fn client_handshake(
     let decoy_str = extract_domain(&decoy.unwrap_or_else(|| "google.com".to_string()));
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
-            let auth = format!("{}{}", PSK_HEADER_PREFIX, token);
-            socket.write_all(auth.as_bytes()).await?;
-            socket.flush().await?;
-            let mut ack = [0u8; 3];
-            socket.read_exact(&mut ack).await?;
-            if &ack != b"ACK" {
-                return Err("Server auth failed".into());
-            }
+            perform_client_upgrade_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
         }
         "aura" | "httpmux" => {
@@ -636,7 +738,7 @@ pub async fn client_handshake(
                  Upgrade: websocket\r\n\
                  Connection: Upgrade\r\n\
                  Authorization: {}{}\r\n\r\n",
-                decoy_str, PSK_HEADER_PREFIX, token
+                 decoy_str, PSK_HEADER_PREFIX, token
             );
             socket.write_all(req.as_bytes()).await?;
             socket.flush().await?;
@@ -664,14 +766,7 @@ pub async fn client_handshake(
             let tls_stream = connector.connect(domain, socket).await?;
             
             let mut stream = TransportStream::TlsClient(tls_stream);
-            let auth = format!("{}{}", PSK_HEADER_PREFIX, token);
-            stream.write_all(auth.as_bytes()).await?;
-            stream.flush().await?;
-            let mut ack = [0u8; 3];
-            stream.read_exact(&mut ack).await?;
-            if &ack != b"ACK" {
-                return Err("Nova server auth failed".into());
-            }
+            perform_client_upgrade_check(&mut stream, token).await?;
             Ok(stream)
         }
         "beacon" | "wssmux" => {
@@ -700,11 +795,7 @@ pub async fn client_handshake(
             Ok(TransportStream::Obfuscated(ObfuscatedStream::new(socket)))
         }
         _ => {
-            let auth = format!("{}{}", PSK_HEADER_PREFIX, token);
-            socket.write_all(auth.as_bytes()).await?;
-            socket.flush().await?;
-            let mut ack = [0u8; 3];
-            socket.read_exact(&mut ack).await?;
+            perform_client_upgrade_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
         }
     }
@@ -721,14 +812,7 @@ pub async fn server_handshake(
 
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
-            let mut buf = vec![0u8; expected.len()];
-            socket.read_exact(&mut buf).await?;
-            let auth = String::from_utf8_lossy(&buf);
-            if auth != expected {
-                return Err("Client authentication failed".into());
-            }
-            socket.write_all(b"ACK").await?;
-            socket.flush().await?;
+            perform_server_handshake_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
         }
         "aura" | "httpmux" => {
@@ -863,14 +947,7 @@ pub async fn server_handshake(
             }
         }
         _ => {
-            let mut buf = vec![0u8; expected.len()];
-            socket.read_exact(&mut buf).await?;
-            let auth = String::from_utf8_lossy(&buf);
-            if auth != expected {
-                return Err("Client authentication failed".into());
-            }
-            socket.write_all(b"ACK").await?;
-            socket.flush().await?;
+            perform_server_handshake_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
         }
     }
@@ -941,7 +1018,7 @@ where
                     status = s;
                     headers = h.into_iter().filter(|(k, _)| {
                         let k_lower = k.to_lowercase();
-                        k_lower != "transfer-encoding" && k_lower != "content-encoding" && k_lower != "connection"
+                        k_lower != "transfer-encoding" && k_lower != "content-encoding" && k_lower != "connection" && k_lower != "server" && k_lower != "date"
                     }).collect();
                     headers.push(("Connection".to_string(), "close".to_string()));
                     body = b;
@@ -952,7 +1029,6 @@ where
                     status = 302;
                     headers = vec![
                         ("Location".to_string(), d.clone()),
-                        ("Content-Length".to_string(), "0".to_string()),
                         ("Connection".to_string(), "close".to_string()),
                     ];
                     body = Vec::new();
@@ -962,14 +1038,62 @@ where
             // Treat as static HTML/text raw decoy content
             headers = vec![
                 ("Content-Type".to_string(), "text/html; charset=UTF-8".to_string()),
-                ("Content-Length".to_string(), d.len().to_string()),
                 ("Connection".to_string(), "close".to_string()),
             ];
             body = d.as_bytes().to_vec();
         }
     }
 
-    // Build raw HTTP response bytes
+    // Dynamic HTTP Date Header calculation
+    let date_str = {
+        let now = std::time::SystemTime::now();
+        let dur = now.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let secs = dur.as_secs();
+        let days = secs / 86400;
+        let day_of_week = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][(days % 7) as usize];
+        
+        let mut year = 1970;
+        let mut days_left = days;
+        loop {
+            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            let year_days = if is_leap { 366 } else { 365 };
+            if days_left < year_days {
+                break;
+            }
+            days_left -= year_days;
+            year += 1;
+        }
+        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let month_days = if is_leap {
+            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        } else {
+            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        };
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        let mut month_idx = 0;
+        while days_left >= month_days[month_idx] {
+            days_left -= month_days[month_idx];
+            month_idx += 1;
+        }
+        let mday = days_left + 1;
+        let hour = (secs % 86400) / 3600;
+        let min = (secs % 3600) / 60;
+        let sec = secs % 60;
+        format!("{}, {:02} {} {} {:02}:{:02}:{:02} GMT", day_of_week, mday, months[month_idx], year, hour, min, sec)
+    };
+
+    headers.push(("Server".to_string(), "nginx/1.22.0 (Ubuntu)".to_string()));
+    headers.push(("Date".to_string(), date_str));
+
+    // Active probing packet size randomization padding
+    let is_html = headers.iter().any(|(k, v)| k.to_lowercase() == "content-type" && v.to_lowercase().contains("text/html"));
+    if is_html && !body.is_empty() {
+        let seed = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let pad_len = 50 + (seed % 450) as usize;
+        let pad_chars: String = (0..pad_len).map(|i| (((seed + i as u128) % 26) as u8 + b'a') as char).collect();
+        let padding_str = format!("\n<!-- {} -->\n", pad_chars);
+        body.extend_from_slice(padding_str.as_bytes());
+    }
     let status_text = match status {
         200 => "OK",
         302 => "Found",

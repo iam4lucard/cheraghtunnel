@@ -10,6 +10,7 @@ pub struct TunnelTraffic {
     pub quota_limit: AtomicU64,
     pub quota_used: AtomicU64,
     pub speed_limit: std::sync::atomic::AtomicU32, // in KB/s
+    pub rtt_ms: std::sync::atomic::AtomicU32,
     pub last_time: Mutex<std::time::Instant>,
     pub bytes_this_sec: std::sync::atomic::AtomicU32,
 }
@@ -28,6 +29,7 @@ pub fn get_traffic_tracker(tunnel_id: i64) -> Arc<TunnelTraffic> {
                 quota_limit: AtomicU64::new(0),
                 quota_used: AtomicU64::new(0),
                 speed_limit: std::sync::atomic::AtomicU32::new(0),
+                rtt_ms: std::sync::atomic::AtomicU32::new(0),
                 last_time: Mutex::new(std::time::Instant::now()),
                 bytes_this_sec: std::sync::atomic::AtomicU32::new(0),
             })
@@ -91,8 +93,20 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for MonitoredStream<S> {
             }
         }
 
-        // Enforce speed limit
-        let speed_limit = self.tracker.speed_limit.load(Ordering::Relaxed);
+        // Enforce speed limit with RTT-based BBR-like congestion pacing
+        let rtt = self.tracker.rtt_ms.load(Ordering::Relaxed);
+        let speed_limit = if rtt > 400 && rtt < 999 {
+            // High RTT detected! Restrict speed to 250 KB/s to drain queue buffers
+            let conf_limit = self.tracker.speed_limit.load(Ordering::Relaxed);
+            if conf_limit > 0 {
+                std::cmp::min(conf_limit, 250)
+            } else {
+                250
+            }
+        } else {
+            self.tracker.speed_limit.load(Ordering::Relaxed)
+        };
+
         if speed_limit > 0 {
             let now = std::time::Instant::now();
             let mut last = self.tracker.last_time.lock().unwrap();

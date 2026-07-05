@@ -94,17 +94,9 @@ fn spawn_protocol_listener(
                         let token_clone = token_owned.clone();
                         let control_tx_clone = control_tx.clone();
                         tokio::spawn(async move {
-                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                            let token_auth = format!("Cheragh-Auth {}", token_clone);
-                            let mut buf = vec![0u8; token_auth.len()];
-                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), kcp_stream.read_exact(&mut buf)).await {
-                                let auth_str = String::from_utf8_lossy(&buf);
-                                if auth_str == token_auth {
-                                    if kcp_stream.write_all(b"ACK").await.is_ok() && kcp_stream.flush().await.is_ok() {
-                                        println!("[SERVER] Authentic client connected from: {} (FakeTCP/KCP) on port {}", addr, control_port);
-                                        let _ = control_tx_clone.send(TransportStream::Kcp(kcp_stream)).await;
-                                    }
-                                }
+                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), crate::tunnel::transport::perform_server_handshake_check(&mut kcp_stream, &token_clone)).await {
+                                println!("[SERVER] Authentic client connected from: {} (FakeTCP/KCP) on port {}", addr, control_port);
+                                let _ = control_tx_clone.send(TransportStream::Kcp(kcp_stream)).await;
                             }
                         });
                     }
@@ -131,24 +123,17 @@ fn spawn_protocol_listener(
             let (new_conn_tx, mut new_conn_rx) = mpsc::channel::<UdpVirtualStream>(100);
             let _multiplexer = UdpMultiplexer::new(socket, mode, new_conn_tx);
             
-            let token_auth = format!("Cheragh-Auth {}", token_owned);
-            let control_tx_clone = control_tx.clone();
+            let token_clone = token_owned.clone();
+            let control_tx_clone_inner = control_tx.clone();
             tokio::spawn(async move {
                 while let Some(mut stream) = new_conn_rx.recv().await {
-                    let token_auth_clone = token_auth.clone();
-                    let control_tx_clone_inner = control_tx_clone.clone();
+                    let token_clone_inner = token_clone.clone();
+                    let control_tx_clone_inner2 = control_tx_clone_inner.clone();
                     
                     tokio::spawn(async move {
-                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                        let mut buf = vec![0u8; token_auth_clone.len()];
-                        if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read_exact(&mut buf)).await {
-                            let auth_str = String::from_utf8_lossy(&buf);
-                            if auth_str == token_auth_clone {
-                                if stream.write_all(b"ACK").await.is_ok() && stream.flush().await.is_ok() {
-                                    println!("[SERVER] Authentic client connected (UDP) on port {}", control_port);
-                                    let _ = control_tx_clone_inner.send(TransportStream::Udp(stream)).await;
-                                }
-                            }
+                        if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), crate::tunnel::transport::perform_server_handshake_check(&mut stream, &token_clone_inner)).await {
+                            println!("[SERVER] Authentic client connected (UDP) on port {}", control_port);
+                            let _ = control_tx_clone_inner2.send(TransportStream::Udp(stream)).await;
                         }
                     });
                 }
@@ -512,24 +497,13 @@ pub async fn run_client(
                     
                     match client.connect(config).await {
                         Ok(mut s) => {
-                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                            let auth = format!("Cheragh-Auth {}", token_clone);
-                            if s.write_all(auth.as_bytes()).await.is_err() || s.flush().await.is_err() {
-                                eprintln!("[CLIENT-WORKER-{}] Failed to write auth token to FakeTCP stream", worker_id);
+                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), crate::tunnel::transport::perform_client_upgrade_check(&mut s, &token_clone)).await {
+                                dynamic_mtu = 1350;
+                                TransportStream::Kcp(s)
+                            } else {
+                                eprintln!("[CLIENT-WORKER-{}] FakeTCP KCP authentication/upgrade failed on server {}", worker_id, current_ip);
                                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                                 continue;
-                            }
-                            let mut ack = [0u8; 3];
-                            match tokio::time::timeout(tokio::time::Duration::from_secs(5), s.read_exact(&mut ack)).await {
-                                Ok(Ok(_)) if &ack == b"ACK" => {
-                                    dynamic_mtu = 1350;
-                                    TransportStream::Kcp(s)
-                                }
-                                _ => {
-                                    eprintln!("[CLIENT-WORKER-{}] FakeTCP KCP authentication failed on server {}", worker_id, current_ip);
-                                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                                    continue;
-                                }
                             }
                         }
                         Err(e) => {
@@ -600,29 +574,16 @@ pub async fn run_client(
 
                         if !success {
                             eprintln!("[CLIENT-WORKER-{}] UDP connection handshake timeout with {}", worker_id, current_ip);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             ip_index += 1;
                             continue;
                         }
 
-                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                        let auth = format!("Cheragh-Auth {}", token_clone);
-                        if stream.write_all(auth.as_bytes()).await.is_err() || stream.flush().await.is_err() {
-                            eprintln!("[CLIENT-WORKER-{}] Failed to write auth token to UDP stream", worker_id);
-                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        if let Err(e) = crate::tunnel::transport::perform_client_upgrade_check(&mut stream, &token_clone).await {
+                            eprintln!("[CLIENT-WORKER-{}] UDP authentication/upgrade failed on server {}: {}", worker_id, current_ip, e);
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                             ip_index += 1;
                             continue;
-                        }
-
-                        let mut ack = [0u8; 3];
-                        match tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut ack)).await {
-                            Ok(Ok(_)) if &ack == b"ACK" => {}
-                            _ => {
-                                eprintln!("[CLIENT-WORKER-{}] UDP authentication failed on server {}", worker_id, current_ip);
-                                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                                ip_index += 1;
-                                continue;
-                            }
                         }
                     }
 
