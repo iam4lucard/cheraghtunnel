@@ -559,6 +559,9 @@ td {
 .modal-card {
     width: 100%;
     max-width: 600px;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding-right: 10px; /* offset the scrollbar visually */
 }
 
 .modal-card h3 {
