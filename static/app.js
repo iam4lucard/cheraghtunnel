@@ -415,6 +415,9 @@ async function toggleTunnel(id) {
         const res = await apiFetch(`/api/tunnels/${id}/toggle`, { method: 'POST' });
         if (res && res.ok) {
             loadTunnels();
+        } else if (res) {
+            const errorMsg = await res.text();
+            alert(errorMsg || "Failed to toggle tunnel state");
         }
     } catch (err) {
         console.error(err);
