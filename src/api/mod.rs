@@ -606,6 +606,7 @@ systemctl restart cheragh-server-{id}
 }
 
 fn generate_client_script(tunnel: &db::Tunnel, iran_ip: &str) -> String {
+    let port_hop_flag = if tunnel.port_hopping.unwrap_or(0) == 1 { "--port-hopping" } else { "" };
     let decoy = tunnel.decoy_url.clone().unwrap_or_else(|| "google.com".to_string());
     
     format!(
@@ -624,7 +625,7 @@ Description=CheraghTunnel Client Node {id}
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/cheraghtunnel-{id} client -s {iran_ip} -c {control_port} -p {public_port} -l 127.0.0.1:{kharej_port} -t '{token}' --protocol {protocol} --tunnel-id {id} --decoy '{decoy}'
+ExecStart=/usr/local/bin/cheraghtunnel-{id} client -s {iran_ip} -c {control_port} -p {public_port} -l 127.0.0.1:{kharej_port} -t '{token}' --protocol {protocol} --tunnel-id {id} --decoy '{decoy}' {port_hop_flag}
 Restart=always
 User=root
 
@@ -644,6 +645,7 @@ systemctl restart cheragh-node-{id}
         token = tunnel.token,
         protocol = tunnel.protocol,
         decoy = decoy,
+        port_hop_flag = port_hop_flag,
     )
 }
 
