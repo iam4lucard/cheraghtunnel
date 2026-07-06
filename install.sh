@@ -176,8 +176,8 @@ systemctl enable cheraghtunnel
 systemctl start cheraghtunnel
 
 # Get public and local IPs for display
-PUBLIC_IP=$(curl -s --max-time 3 ifconfig.me || curl -s --max-time 3 api.ipify.org || echo "")
-LOCAL_IPS=$(hostname -I 2>/dev/null || echo "")
+PUBLIC_IP=$(curl -s --max-time 3 --noproxy "*" ifconfig.me || curl -s --max-time 3 --noproxy "*" api.ipify.org || curl -s --max-time 3 ifconfig.me || echo "")
+PRIMARY_LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p')
 
 echo "=========================================================="
 echo "  CheraghTunnel Web Panel successfully installed!"
@@ -185,11 +185,12 @@ echo "  Access URLs:"
 if [ -n "$PUBLIC_IP" ]; then
   echo "    - Public: http://$PUBLIC_IP:$PANEL_PORT"
 fi
-for ip in $LOCAL_IPS; do
-  if [ "$ip" != "127.0.0.1" ]; then
-    echo "    - Interface: http://$ip:$PANEL_PORT"
-  fi
-done
+if [ -n "$PRIMARY_LOCAL_IP" ] && [ "$PRIMARY_LOCAL_IP" != "$PUBLIC_IP" ]; then
+  echo "    - Local IP: http://$PRIMARY_LOCAL_IP:$PANEL_PORT"
+fi
+echo ""
+echo "  [Note] If your server is behind a NAT/Firewall, Proxy, or active VPN,"
+echo "         please use your server's actual public IP address instead."
 echo "  "
 echo "  Credentials:"
 echo "  Username: $ADMIN_USER"
