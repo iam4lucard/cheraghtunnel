@@ -22,6 +22,7 @@ pub struct WsByteStream<S> {
     pub ws: tokio_tungstenite::WebSocketStream<S>,
     read_buf: Vec<u8>,
     read_pos: usize,
+    ping_timer: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl<S> WsByteStream<S> {
@@ -30,6 +31,7 @@ impl<S> WsByteStream<S> {
             ws,
             read_buf: Vec::new(),
             read_pos: 0,
+            ping_timer: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30))),
         }
     }
 }
@@ -44,6 +46,14 @@ where
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         loop {
+            // 1. Check active ping timer for keepalive when connection is idle
+            let this = self.as_mut().get_mut();
+            if std::future::Future::poll(this.ping_timer.as_mut(), cx).is_ready() {
+                let _ = Pin::new(&mut this.ws).start_send(Message::Ping(Vec::new()));
+                let _ = Pin::new(&mut this.ws).poll_flush(cx);
+                this.ping_timer.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(30));
+            }
+
             let available = self.read_buf.len() - self.read_pos;
             if available > 0 {
                 let n = std::cmp::min(buf.remaining(), available);
@@ -53,11 +63,18 @@ where
                     self.read_buf.clear();
                     self.read_pos = 0;
                 }
+                // Reset ping timer on active data read
+                let this = self.as_mut().get_mut();
+                this.ping_timer.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(30));
                 return Poll::Ready(Ok(()));
             }
 
             match Pin::new(&mut self.ws).poll_next(cx) {
                 Poll::Ready(Some(Ok(msg))) => {
+                    // Reset ping timer on active incoming message
+                    let this = self.as_mut().get_mut();
+                    this.ping_timer.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(30));
+
                     match msg {
                         Message::Binary(bin) => {
                             self.read_buf = bin;
@@ -102,6 +119,10 @@ where
     ) -> Poll<io::Result<usize>> {
         match Pin::new(&mut self.ws).poll_ready(cx) {
             Poll::Ready(Ok(())) => {
+                // Reset ping timer on active outgoing write
+                let this = self.as_mut().get_mut();
+                this.ping_timer.as_mut().reset(tokio::time::Instant::now() + std::time::Duration::from_secs(30));
+
                 let msg = Message::Binary(buf.to_vec());
                 match Pin::new(&mut self.ws).start_send(msg) {
                     Ok(()) => Poll::Ready(Ok(buf.len())),
@@ -305,13 +326,18 @@ pub enum TransportStream {
     Tcp(TcpStream),
     TlsClient(ClientTlsStream<TcpStream>),
     TlsServer(ServerTlsStream<TcpStream>),
+    #[allow(dead_code)]
     Ws(WsByteStream<TcpStream>),
+    #[allow(dead_code)]
     Wss(WsByteStream<ClientTlsStream<TcpStream>>),
+    #[allow(dead_code)]
     WssServer(WsByteStream<ServerTlsStream<TcpStream>>),
     Udp(udp::UdpVirtualStream),
     Kcp(KcpStream),
     Obfuscated(ObfuscatedStream<TcpStream>),
     ObfuscatedWs(ObfuscatedStream<WsByteStream<TcpStream>>),
+    ObfuscatedWss(ObfuscatedStream<WsByteStream<ClientTlsStream<TcpStream>>>),
+    ObfuscatedWssServer(ObfuscatedStream<WsByteStream<ServerTlsStream<TcpStream>>>),
 }
 
 impl AsyncRead for TransportStream {
@@ -331,6 +357,8 @@ impl AsyncRead for TransportStream {
             TransportStream::Kcp(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_read(cx, buf),
+            TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_read(cx, buf),
+            TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -352,6 +380,8 @@ impl AsyncWrite for TransportStream {
             TransportStream::Kcp(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_write(cx, buf),
+            TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_write(cx, buf),
+            TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -367,6 +397,8 @@ impl AsyncWrite for TransportStream {
             TransportStream::Kcp(s) => Pin::new(s).poll_flush(cx),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_flush(cx),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_flush(cx),
+            TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_flush(cx),
+            TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -382,6 +414,8 @@ impl AsyncWrite for TransportStream {
             TransportStream::Kcp(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::Obfuscated(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_shutdown(cx),
+            TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_shutdown(cx),
+            TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
 }
@@ -789,7 +823,7 @@ pub async fn client_handshake(
                 socket,
                 Some(get_ws_config()),
             ).await?;
-            Ok(TransportStream::Ws(WsByteStream::new(ws_stream)))
+            Ok(TransportStream::ObfuscatedWs(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "nova" | "httpsmux" => {
             let config = get_client_tls_config();
@@ -819,7 +853,7 @@ pub async fn client_handshake(
                 tls_stream,
                 Some(get_ws_config()),
             ).await?;
-            Ok(TransportStream::Wss(WsByteStream::new(ws_stream)))
+            Ok(TransportStream::ObfuscatedWss(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "mirage" | "realitymux" => {
             // Write standard TLS 1.2 ClientHello spoofing microsoft.com
@@ -934,7 +968,7 @@ pub async fn server_handshake(
             if !token_found.load(Ordering::Relaxed) {
                 return Err("WebSocket auth token validation failed".into());
             }
-            Ok(TransportStream::Ws(WsByteStream::new(ws_stream)))
+            Ok(TransportStream::ObfuscatedWs(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "nova" | "httpsmux" => {
             let config = get_server_tls_config()?;
@@ -965,7 +999,7 @@ pub async fn server_handshake(
             if !token_found.load(Ordering::Relaxed) {
                 return Err("WSS auth token validation failed".into());
             }
-            Ok(TransportStream::WssServer(WsByteStream::new(ws_stream)))
+            Ok(TransportStream::ObfuscatedWssServer(ObfuscatedStream::new(WsByteStream::new(ws_stream))))
         }
         "mirage" | "realitymux" => {
             let mut buf = [0u8; 1024];
