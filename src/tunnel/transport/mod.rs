@@ -781,6 +781,7 @@ pub async fn client_handshake(
     token: &str,
     decoy: Option<String>,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
+    let _ = crate::common::network::optimize_socket(&socket);
     let decoy_str = extract_domain(&decoy.unwrap_or_else(|| "google.com".to_string()));
     match protocol {
         "beam" | "tcpmux" | "photon" | "quantummux" => {
@@ -929,6 +930,7 @@ pub async fn server_handshake(
     token: &str,
     decoy: Option<String>,
 ) -> Result<TransportStream, Box<dyn Error + Send + Sync>> {
+    let _ = crate::common::network::optimize_socket(&socket);
     let expected = format!("{}{}", PSK_HEADER_PREFIX, token);
 
     match protocol {
