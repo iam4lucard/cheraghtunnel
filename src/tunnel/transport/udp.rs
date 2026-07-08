@@ -17,11 +17,40 @@ const PKT_DATA: u8 = 3;
 const PKT_ACK: u8 = 4;
 const PKT_FIN: u8 = 5;
 
-// Helper function to send data over a UDP socket. Handles both connected and unconnected sockets.
 async fn send_msg(socket: &UdpSocket, data: &[u8], peer: SocketAddr) -> io::Result<()> {
     match socket.send(data).await {
         Ok(_) => Ok(()),
         Err(_) => socket.send_to(data, peer).await.map(|_| ()),
+    }
+}
+
+// Attempt to send synchronously to avoid Tokio scheduler task-spawning overhead.
+// Falls back to an async tokio::spawn send only if the OS send buffer is full (WouldBlock).
+fn try_send_msg(socket: &Arc<UdpSocket>, data: &[u8], peer: SocketAddr) -> io::Result<()> {
+    match socket.try_send(data) {
+        Ok(_) => Ok(()),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            let socket_clone = socket.clone();
+            let data_vec = data.to_vec();
+            tokio::spawn(async move {
+                let _ = send_msg(&socket_clone, &data_vec, peer).await;
+            });
+            Ok(())
+        }
+        Err(_) => {
+            match socket.try_send_to(data, peer) {
+                Ok(_) => Ok(()),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    let socket_clone = socket.clone();
+                    let data_vec = data.to_vec();
+                    tokio::spawn(async move {
+                        let _ = send_msg(&socket_clone, &data_vec, peer).await;
+                    });
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -154,6 +183,12 @@ pub struct UdpVirtualStreamInner {
     last_sent_time: Instant,
     tokens: f64,
     max_tokens: f64,
+    pacing_rate: f64,
+
+    // Dynamic RTT/RTO tracking (RFC 6298)
+    srtt_ms: f64,
+    rttvar_ms: f64,
+    rto_ms: u64,
 }
 
 pub struct UdpVirtualStream {
@@ -198,8 +233,22 @@ impl UdpVirtualStream {
             fec_encoder: FecEncoder::new(),
             is_closed: false,
             last_sent_time: Instant::now(),
-            tokens: 1000.0,
-            max_tokens: 1000.0,
+            tokens: 10000.0,
+            max_tokens: 10000.0,
+            pacing_rate: {
+                if let Ok(val) = std::env::var("HYSTERIA_MBPS") {
+                    if let Ok(mbps) = val.parse::<f64>() {
+                        (mbps * 1_000_000.0 / 12_000.0).max(100.0)
+                    } else {
+                        50000.0 // Default to ~600 Mbps limit
+                    }
+                } else {
+                    50000.0 // Default to ~600 Mbps limit
+                }
+            },
+            srtt_ms: 100.0,
+            rttvar_ms: 50.0,
+            rto_ms: 200,
         }));
 
         let inner_clone = inner.clone();
@@ -266,9 +315,11 @@ impl UdpVirtualStreamInner {
             raw.extend_from_slice(&seq.to_be_bytes());
             raw.extend_from_slice(&ack.to_be_bytes());
             raw.extend_from_slice(payload);
-            for _ in 0..padding_len {
-                raw.push(rng.gen::<u8>());
-            }
+            
+            // Bulk random padding generation
+            let old_len = raw.len();
+            raw.resize(old_len + padding_len, 0);
+            rng.fill(&mut raw[old_len..]);
             return raw;
         }
 
@@ -286,9 +337,11 @@ impl UdpVirtualStreamInner {
             raw.extend_from_slice(&ack.to_be_bytes());
             raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
             raw.extend_from_slice(payload);
-            for _ in 0..padding_len {
-                raw.push(rng.gen::<u8>());
-            }
+            
+            // Bulk random padding generation
+            let old_len = raw.len();
+            raw.resize(old_len + padding_len, 0);
+            rng.fill(&mut raw[old_len..]);
             return raw;
         }
 
@@ -299,9 +352,11 @@ impl UdpVirtualStreamInner {
         raw.extend_from_slice(&ack.to_be_bytes());
         raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
         raw.extend_from_slice(payload);
-        for _ in 0..padding_len {
-            raw.push(rng.gen::<u8>());
-        }
+        
+        // Bulk random padding generation
+        let old_len = raw.len();
+        raw.resize(old_len + padding_len, 0);
+        rng.fill(&mut raw[old_len..]);
         raw
     }
 
@@ -360,10 +415,10 @@ impl UdpVirtualStreamInner {
             let now = Instant::now();
             let elapsed = now.duration_since(self.last_sent_time).as_secs_f64();
             self.last_sent_time = now;
-            self.tokens = (self.tokens + elapsed * 2000.0).min(self.max_tokens);
+            self.tokens = (self.tokens + elapsed * self.pacing_rate).min(self.max_tokens);
             if self.tokens < 1.0 {
                 tokio::time::sleep(Duration::from_millis(1)).await;
-                self.tokens += 0.001 * 2000.0;
+                self.tokens += 0.001 * self.pacing_rate;
             }
             self.tokens -= 1.0;
         }
@@ -391,10 +446,16 @@ impl UdpVirtualStreamInner {
         let mut to_resend = Vec::new();
         
         for pkt in &mut self.unacked_packets {
-            if now.duration_since(pkt.sent_time) > Duration::from_millis(100) {
+            if now.duration_since(pkt.sent_time) > Duration::from_millis(self.rto_ms) {
                 pkt.sent_time = now;
                 pkt.retries += 1;
                 to_resend.push(pkt.data.clone());
+                
+                // Exponential backoff for subsequent retries to avoid flooding a congested link
+                if pkt.retries > 1 {
+                    self.rto_ms = (self.rto_ms * 2).min(1000);
+                }
+
                 if pkt.retries > 30 {
                     self.is_closed = true;
                     if let Some(w) = self.rx_waker.take() { w.wake(); }
@@ -422,6 +483,21 @@ impl UdpVirtualStreamInner {
             Some(res) => res,
             None => return,
         };
+
+        // Smoothed RTT estimation (RFC 6298 with Karn's algorithm)
+        let now = Instant::now();
+        for pkt in &self.unacked_packets {
+            if pkt.seq == ack {
+                if pkt.retries == 0 {
+                    let rtt_sample = now.duration_since(pkt.sent_time).as_secs_f64() * 1000.0;
+                    self.rttvar_ms = 0.75 * self.rttvar_ms + 0.25 * (self.srtt_ms - rtt_sample).abs();
+                    self.srtt_ms = 0.875 * self.srtt_ms + 0.125 * rtt_sample;
+                    let calculated_rto = (self.srtt_ms + (4.0 * self.rttvar_ms).max(15.0)) as u64;
+                    self.rto_ms = calculated_rto.clamp(50, 1000);
+                }
+                break;
+            }
+        }
 
         while let Some(pkt) = self.unacked_packets.front() {
             if pkt.seq <= ack {
@@ -570,10 +646,7 @@ impl AsyncWrite for UdpVirtualStream {
         if inner.mode == UdpMode::Ray {
             let socket = inner.socket.clone();
             let peer = inner.peer;
-            let data = buf.to_vec();
-            tokio::spawn(async move {
-                let _ = send_msg(&socket, &data, peer).await;
-            });
+            let _ = try_send_msg(&socket, buf, peer);
             return Poll::Ready(Ok(buf.len()));
         }
 
@@ -602,31 +675,31 @@ impl AsyncWrite for UdpVirtualStream {
                 let parity_seq = seq + 1;
                 let parity_framed = inner.frame_packet(PKT_DATA, parity_seq, inner.next_expected_seq - 1, &parity);
                 let socket_fec = socket.clone();
-                tokio::spawn(async move {
-                    let _ = send_msg(&socket_fec, &parity_framed, peer).await;
-                });
+                let _ = try_send_msg(&socket_fec, &parity_framed, peer);
             }
         }
 
-        let pacing_mode = inner.mode;
-        let last_sent = inner.last_sent_time;
-        let mut tokens = inner.tokens;
-        let max_tokens = inner.max_tokens;
+        if inner.mode == UdpMode::Hysteria {
+            let now = Instant::now();
+            let elapsed = now.duration_since(inner.last_sent_time).as_secs_f64();
+            inner.last_sent_time = now;
+            inner.tokens = (inner.tokens + elapsed * inner.pacing_rate).min(inner.max_tokens);
 
-        tokio::spawn(async move {
-            if pacing_mode == UdpMode::Hysteria {
-                let now = Instant::now();
-                let elapsed = now.duration_since(last_sent).as_secs_f64();
-                tokens = (tokens + elapsed * 2000.0).min(max_tokens);
-                if tokens < 1.0 {
+            if inner.tokens < 1.0 {
+                // Fallback: if we exceed pacing rate, spawn task to sleep-and-send
+                let socket_clone = socket.clone();
+                tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(1)).await;
-                }
+                    let _ = send_msg(&socket_clone, &framed_clone, peer).await;
+                });
+            } else {
+                inner.tokens -= 1.0;
+                let _ = try_send_msg(&socket, &framed_clone, peer);
             }
-            let _ = send_msg(&socket, &framed_clone, peer).await;
-        });
-
-        inner.last_sent_time = Instant::now();
-        inner.tokens = tokens;
+        } else {
+            // Flash / Photon / Halo / Lantern: send synchronously without spawning task
+            let _ = try_send_msg(&socket, &framed_clone, peer);
+        }
 
         Poll::Ready(Ok(buf.len()))
     }
@@ -653,9 +726,7 @@ impl AsyncWrite for UdpVirtualStream {
         let peer = inner.peer;
         let fin_pkt = inner.frame_packet(PKT_FIN, 0, 0, &[]);
 
-        tokio::spawn(async move {
-            let _ = send_msg(&socket, &fin_pkt, peer).await;
-        });
+        let _ = try_send_msg(&socket, &fin_pkt, peer);
 
         Poll::Ready(Ok(()))
     }
