@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
 use rand::Rng;
+use sha2::{Sha256, Digest};
 
 // Packet types for our custom reliable UDP layer
 const PKT_SYN: u8 = 1;
@@ -202,6 +203,7 @@ pub struct UdpVirtualStreamInner {
     next_expected_seq: u32,
     rx_out_of_order: HashMap<u32, Vec<u8>>,
     fec_decoder: FecDecoder,
+    token: String,
     
     tx_waker: Option<Waker>,
     next_seq: u32,
@@ -246,6 +248,7 @@ impl UdpVirtualStream {
         mode: UdpMode,
         rx: mpsc::Receiver<Vec<u8>>,
         handshake_done: bool,
+        token: &str,
     ) -> Self {
         let inner = Arc::new(Mutex::new(UdpVirtualStreamInner {
             socket,
@@ -257,6 +260,7 @@ impl UdpVirtualStream {
             next_expected_seq: 0,
             rx_out_of_order: HashMap::new(),
             fec_decoder: FecDecoder::new(),
+            token: token.to_string(),
             tx_waker: None,
             next_seq: 0,
             last_acked_seq: 0,
@@ -332,6 +336,48 @@ impl UdpVirtualStream {
 }
 
 impl UdpVirtualStreamInner {
+    /// Derives a 32-byte key from the user token using SHA256.
+    fn derive_key(&self) -> [u8; 32] {
+        let digest = Sha256::digest(self.token.as_bytes());
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&digest);
+        key
+    }
+
+    /// XOR-encrypts/decrypts `buf` in-place using a keystream derived from
+    /// SHA256(key XOR seq_nonce). The nonce (4 bytes of seq) ensures every
+    /// packet has a unique keystream, even if the payload is identical.
+    /// Because XOR is symmetric, the same call encrypts and decrypts.
+    fn crypt_buffer(&self, buf: &mut [u8], seq_nonce: u32) {
+        let key = self.derive_key();
+
+        // Build the 32-byte seed: key XOR (seq_nonce repeated)
+        let nonce_bytes = seq_nonce.to_be_bytes();
+        let mut seed = key;
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b ^= nonce_bytes[i % 4];
+        }
+
+        // Generate keystream blocks of 32 bytes using SHA256 counter-mode
+        let mut keystream = Vec::with_capacity(buf.len() + 32);
+        let mut counter: u32 = 0;
+        while keystream.len() < buf.len() {
+            let mut block_input = seed;
+            let counter_bytes = counter.to_be_bytes();
+            for (i, b) in block_input[28..32].iter_mut().enumerate() {
+                *b ^= counter_bytes[i];
+            }
+            let block = Sha256::digest(&block_input);
+            keystream.extend_from_slice(&block);
+            counter += 1;
+        }
+
+        // XOR in-place
+        for (b, k) in buf.iter_mut().zip(keystream.iter()) {
+            *b ^= k;
+        }
+    }
+
     fn frame_packet(&self, pkt_type: u8, seq: u32, ack: u32, payload: &[u8]) -> Vec<u8> {
         let mut raw = Vec::with_capacity(64 + payload.len());
         let mut rng = rand::thread_rng();
@@ -376,10 +422,12 @@ impl UdpVirtualStreamInner {
             return raw;
         }
 
-        // Flash / Photon / Hysteria (Obfuscated Reliable UDP):
-        // [pkt_type] + [seq (4)] + [ack (4)] + [payload_len (2)] + [payload] + [padding]
+        // Flash / Photon / Hysteria (Encrypted Reliable UDP):
+        // [seq (4, plaintext)] + encrypt_with(seq)[pkt_type(1) + ack(4) + payload_len(2) + payload + padding]
+        // The seq is left in plaintext so the receiver can derive the decryption nonce.
+        // All remaining bytes are XOR-encrypted making the packet look like random noise.
+        raw.extend_from_slice(&seq.to_be_bytes()); // 4 bytes plaintext nonce
         raw.push(pkt_type);
-        raw.extend_from_slice(&seq.to_be_bytes());
         raw.extend_from_slice(&ack.to_be_bytes());
         raw.extend_from_slice(&(payload.len() as u16).to_be_bytes());
         raw.extend_from_slice(payload);
@@ -388,6 +436,9 @@ impl UdpVirtualStreamInner {
         let old_len = raw.len();
         raw.resize(old_len + padding_len, 0);
         rng.fill(&mut raw[old_len..]);
+
+        // Encrypt everything after the 4-byte plaintext seq
+        self.crypt_buffer(&mut raw[4..], seq);
         raw
     }
 
@@ -426,18 +477,26 @@ impl UdpVirtualStreamInner {
             return Some((pkt_type, seq, ack, payload));
         }
 
-        // Flash / Photon / Hysteria deframing
-        if raw.len() < 11 {
+        // Flash / Photon / Hysteria deframing (encrypted)
+        // Format: [seq (4, plaintext)] + encrypt_with(seq)[pkt_type(1) + ack(4) + payload_len(2) + payload + padding]
+        if raw.len() < 12 {
             return None;
         }
-        let pkt_type = raw[0];
-        let seq = u32::from_be_bytes([raw[1], raw[2], raw[3], raw[4]]);
-        let ack = u32::from_be_bytes([raw[5], raw[6], raw[7], raw[8]]);
-        let payload_len = u16::from_be_bytes([raw[9], raw[10]]) as usize;
-        if raw.len() < 11 + payload_len {
+        let seq = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        // Decrypt the rest of the packet in-place
+        let mut decrypted = raw[4..].to_vec();
+        self.crypt_buffer(&mut decrypted, seq);
+        // Now parse from decrypted bytes: [pkt_type(1)] + [ack(4)] + [payload_len(2)] + [payload]
+        if decrypted.len() < 7 {
             return None;
         }
-        let payload = raw[11..11 + payload_len].to_vec();
+        let pkt_type = decrypted[0];
+        let ack = u32::from_be_bytes([decrypted[1], decrypted[2], decrypted[3], decrypted[4]]);
+        let payload_len = u16::from_be_bytes([decrypted[5], decrypted[6]]) as usize;
+        if decrypted.len() < 7 + payload_len {
+            return None;
+        }
+        let payload = decrypted[7..7 + payload_len].to_vec();
         Some((pkt_type, seq, ack, payload))
     }
 
@@ -868,12 +927,13 @@ pub struct UdpMultiplexer {
 }
 
 impl UdpMultiplexer {
-    pub fn new(socket: UdpSocket, mode: UdpMode, new_conn_tx: mpsc::Sender<UdpVirtualStream>) -> Self {
+    pub fn new(socket: UdpSocket, mode: UdpMode, new_conn_tx: mpsc::Sender<UdpVirtualStream>, token: String) -> Self {
         let socket = Arc::new(socket);
         let sessions: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>> = Arc::new(Mutex::new(HashMap::new()));
         
         let socket_clone = socket.clone();
         let sessions_clone = sessions.clone();
+        let token_clone = token.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65535];
             loop {
@@ -887,15 +947,19 @@ impl UdpMultiplexer {
                                 map.remove(&addr);
                             }
                         } else {
+                            // Determine whether this first packet from a new peer should open a session.
+                            // For encrypted modes (Flash/Photon/Hysteria), we cannot inspect pkt_type
+                            // directly — instead we accept any first packet and let the handshake check
+                            // reject illegitimate clients.
                             let is_syn = if mode == UdpMode::Ray {
                                 true
                             } else {
-                                let pkt_type = match mode {
-                                    UdpMode::Halo => data.get(1).copied(),
-                                    UdpMode::Lantern => data.get(20).copied(),
-                                    _ => data.first().copied(),
-                                };
-                                pkt_type.map(|b| b == PKT_SYN).unwrap_or(false)
+                                match mode {
+                                    UdpMode::Halo => data.get(1).copied().map(|b| b == PKT_SYN).unwrap_or(false),
+                                    UdpMode::Lantern => data.get(20).copied().map(|b| b == PKT_SYN).unwrap_or(false),
+                                    // Flash / Photon / Hysteria: fully encrypted — accept and let handshake check decide
+                                    _ => data.len() >= 12,
+                                }
                             };
 
                             if is_syn {
@@ -907,7 +971,8 @@ impl UdpMultiplexer {
                                     addr,
                                     mode,
                                     rx,
-                                    false
+                                    false,
+                                    &token_clone
                                 );
                                 
                                 let _ = map.get(&addr).unwrap().send(data).await;
@@ -940,7 +1005,7 @@ impl UdpMultiplexer {
         let mut map = self.sessions.lock().await;
         map.insert(peer, tx);
         
-        UdpVirtualStream::new(self.socket.clone(), peer, mode, rx, handshake_done)
+        UdpVirtualStream::new(self.socket.clone(), peer, mode, rx, handshake_done, "")
     }
 
     #[allow(dead_code)]

@@ -120,7 +120,7 @@ fn spawn_protocol_listener(
             println!("[SERVER] Listening for UDP control packets on port: {}", control_port);
             
             let (new_conn_tx, mut new_conn_rx) = mpsc::channel::<UdpVirtualStream>(100);
-            let _multiplexer = UdpMultiplexer::new(socket, mode, new_conn_tx);
+            let _multiplexer = UdpMultiplexer::new(socket, mode, new_conn_tx, token_owned.clone());
             
             let token_clone = token_owned.clone();
             let control_tx_clone_inner = control_tx.clone();
@@ -612,7 +612,7 @@ pub async fn run_client(
                             return;
                         }
                     };
-                    let mut stream = UdpVirtualStream::new(socket.clone(), peer_addr, mode, rx, false);
+                    let mut stream = UdpVirtualStream::new(socket.clone(), peer_addr, mode, rx, false, &token_clone);
 
                     let socket_clone = socket.clone();
                     let recv_handle = tokio::spawn(async move {

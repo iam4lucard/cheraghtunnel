@@ -33,7 +33,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
             "hysteria" => udp::UdpMode::Hysteria,
             _ => udp::UdpMode::Flash,
         };
-        let _multiplexer = udp::UdpMultiplexer::new(server_socket, mode, new_conn_tx);
+        let _multiplexer = udp::UdpMultiplexer::new(server_socket, mode, new_conn_tx, token_owned.clone());
 
         // Spawn client task
         let client_token = token_owned.clone();
@@ -54,7 +54,7 @@ async fn run_handshake_test(protocol: &'static str, is_udp: bool) {
             });
 
             let peer_addr: std::net::SocketAddr = server_addr.parse().unwrap();
-            let mut stream = udp::UdpVirtualStream::new(socket, peer_addr, mode, rx, false);
+            let mut stream = udp::UdpVirtualStream::new(socket, peer_addr, mode, rx, false, &client_token);
 
             if mode != udp::UdpMode::Ray {
                 // SYN
