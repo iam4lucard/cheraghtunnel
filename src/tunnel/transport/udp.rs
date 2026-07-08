@@ -97,10 +97,8 @@ impl FecEncoder {
             let max_len = self.buffer.iter().map(|v| v.len()).max().unwrap_or(0);
             let mut parity = vec![0u8; max_len];
             for pkt in &self.buffer {
-                for (i, &b) in pkt.iter().enumerate() {
-                    if i < parity.len() {
-                        parity[i] ^= b;
-                    }
+                for (p, &b) in parity.iter_mut().zip(pkt.iter()) {
+                    *p ^= b;
                 }
             }
             self.buffer.clear();
@@ -159,10 +157,8 @@ impl FecDecoder {
             let mut recovered_raw = vec![0u8; max_len];
             for s in &present {
                 let pkt = self.buffer.get(s).unwrap();
-                for (i, &b) in pkt.iter().enumerate() {
-                    if i < recovered_raw.len() {
-                        recovered_raw[i] ^= b;
-                    }
+                for (p, &b) in recovered_raw.iter_mut().zip(pkt.iter()) {
+                    *p ^= b;
                 }
             }
 
