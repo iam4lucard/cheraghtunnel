@@ -526,7 +526,11 @@ pub async fn run_client(
         return Err("No server IPs provided".into());
     }
 
-    let parallel_connections = 3;
+    let parallel_connections = std::env::var("CHERAGH_WORKERS")
+        .unwrap_or_else(|_| "8".to_string())
+        .parse::<usize>()
+        .unwrap_or(8);
+        
     let mut handles = Vec::new();
 
     for worker_id in 0..parallel_connections {
