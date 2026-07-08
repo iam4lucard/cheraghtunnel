@@ -65,6 +65,7 @@ pub enum UdpMode {
     Lantern,   // Reliable UDP + L3/TUN IP packet framing
 }
 
+#[allow(dead_code)]
 struct SentPacket {
     seq: u32,
     data: Vec<u8>,
@@ -205,7 +206,7 @@ pub struct UdpVirtualStreamInner {
     tx_waker: Option<Waker>,
     next_seq: u32,
     last_acked_seq: u32,
-    unacked_packets: VecDeque<SentPacket>,
+    unacked_packets: std::collections::BTreeMap<u32, SentPacket>,
     fec_encoder: FecEncoder,
     
     is_closed: bool,
@@ -259,7 +260,7 @@ impl UdpVirtualStream {
             tx_waker: None,
             next_seq: 0,
             last_acked_seq: 0,
-            unacked_packets: VecDeque::new(),
+            unacked_packets: std::collections::BTreeMap::new(),
             fec_encoder: FecEncoder::new(),
             is_closed: false,
             last_sent_time: Instant::now(),
@@ -475,7 +476,7 @@ impl UdpVirtualStreamInner {
         let now = Instant::now();
         let mut to_resend = Vec::new();
         
-        for pkt in &mut self.unacked_packets {
+        for pkt in self.unacked_packets.values_mut() {
             if now.duration_since(pkt.sent_time) > Duration::from_millis(self.rto_ms) {
                 pkt.sent_time = now;
                 pkt.retries += 1;
@@ -514,24 +515,20 @@ impl UdpVirtualStreamInner {
             None => return,
         };
 
-        // Smoothed RTT estimation (RFC 6298 with Karn's algorithm)
         let now = Instant::now();
-        for pkt in &self.unacked_packets {
-            if pkt.seq == ack {
-                if pkt.retries == 0 {
-                    let rtt_sample = now.duration_since(pkt.sent_time).as_secs_f64() * 1000.0;
-                    self.rttvar_ms = 0.75 * self.rttvar_ms + 0.25 * (self.srtt_ms - rtt_sample).abs();
-                    self.srtt_ms = 0.875 * self.srtt_ms + 0.125 * rtt_sample;
-                    let calculated_rto = (self.srtt_ms + (4.0 * self.rttvar_ms).max(15.0)) as u64;
-                    self.rto_ms = calculated_rto.clamp(50, 1000);
-                }
-                break;
+        if let Some(pkt) = self.unacked_packets.get(&ack) {
+            if pkt.retries == 0 {
+                let rtt_sample = now.duration_since(pkt.sent_time).as_secs_f64() * 1000.0;
+                self.rttvar_ms = 0.75 * self.rttvar_ms + 0.25 * (self.srtt_ms - rtt_sample).abs();
+                self.srtt_ms = 0.875 * self.srtt_ms + 0.125 * rtt_sample;
+                let calculated_rto = (self.srtt_ms + (4.0 * self.rttvar_ms).max(15.0)) as u64;
+                self.rto_ms = calculated_rto.clamp(50, 1000);
             }
         }
 
-        while let Some(pkt) = self.unacked_packets.front() {
-            if pkt.seq <= ack {
-                self.unacked_packets.pop_front();
+        while let Some(&seq) = self.unacked_packets.keys().next() {
+            if seq <= ack {
+                self.unacked_packets.pop_first();
             } else {
                 break;
             }
@@ -643,7 +640,36 @@ impl UdpVirtualStreamInner {
                 }
             }
             PKT_ACK => {
-                // Queue clean handled above
+                // Parse SACK sequence numbers from payload (4 bytes per seq)
+                let mut sacks = Vec::new();
+                let mut chunk = payload.as_slice();
+                while chunk.len() >= 4 {
+                    let s = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    sacks.push(s);
+                    chunk = &chunk[4..];
+                }
+
+                // Mark SACKed packets as acknowledged (remove from unacked)
+                for seq in &sacks {
+                    self.unacked_packets.remove(seq);
+                }
+
+                // Fast Retransmit:
+                // If there are packets in unacked_packets that are older (seq < max_sack)
+                // and have not been SACKed, they are likely lost. We immediately retransmit them.
+                if let Some(&max_sack) = sacks.iter().max() {
+                    let mut to_fast_retransmit = Vec::new();
+                    for (&seq, pkt) in &mut self.unacked_packets {
+                        if seq < max_sack && !sacks.contains(&seq) {
+                            pkt.sent_time = Instant::now() - Duration::from_millis(self.rto_ms + 1); // Force immediate retry
+                            pkt.retries += 1;
+                            to_fast_retransmit.push(pkt.data.clone());
+                        }
+                    }
+                    for data in to_fast_retransmit {
+                        let _ = self.send_packet_paced(&data).await;
+                    }
+                }
             }
             PKT_FIN => {
                 self.is_closed = true;
@@ -661,7 +687,18 @@ impl UdpVirtualStreamInner {
         } else {
             self.next_expected_seq - 1
         };
-        let ack_pkt = self.frame_packet(PKT_ACK, 0, ack_val, &[]);
+
+        // Populate SACK: up to 8 out-of-order sequence numbers to notify the sender
+        let mut sack_payload = Vec::new();
+        if !self.rx_out_of_order.is_empty() && self.mode != UdpMode::Ray {
+            let mut keys: Vec<u32> = self.rx_out_of_order.keys().copied().collect();
+            keys.sort_unstable();
+            for &seq in keys.iter().take(8) {
+                sack_payload.extend_from_slice(&seq.to_be_bytes());
+            }
+        }
+
+        let ack_pkt = self.frame_packet(PKT_ACK, 0, ack_val, &sack_payload);
         let _ = send_msg(&self.socket, &ack_pkt, self.peer).await;
     }
 
@@ -754,7 +791,7 @@ impl AsyncWrite for UdpVirtualStream {
         let peer = inner.peer;
         let framed_clone = framed.clone();
 
-        inner.unacked_packets.push_back(SentPacket {
+        inner.unacked_packets.insert(seq, SentPacket {
             seq,
             data: framed,
             sent_time: Instant::now(),
