@@ -493,9 +493,26 @@ where
                 NirvanaReadState::ChunkBody { size } => {
                     let unconsumed = this.read_unconsumed();
                     if unconsumed.len() >= size {
-                        let mut payload = unconsumed[..size].to_vec();
-                        for (i, b) in payload.iter_mut().enumerate() {
+                        if size < 2 {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Nirvana chunk body too short",
+                            )));
+                        }
+                        let mut len_bytes = unconsumed[..2].to_vec();
+                        for (i, b) in len_bytes.iter_mut().enumerate() {
                             *b ^= this.xor_key[i % 32];
+                        }
+                        let payload_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+                        if 2 + payload_len > size {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Nirvana payload length out of bounds",
+                            )));
+                        }
+                        let mut payload = unconsumed[2..2 + payload_len].to_vec();
+                        for (i, b) in payload.iter_mut().enumerate() {
+                            *b ^= this.xor_key[(i + 2) % 32];
                         }
                         this.payload_buf.extend(payload);
                         this.read_state = NirvanaReadState::ChunkFooter;
@@ -561,16 +578,31 @@ where
             this.write_buf.clear();
             this.write_pos = 0;
 
-            let mut encrypted = buf.to_vec();
-            for (i, b) in encrypted.iter_mut().enumerate() {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let padding_len = rng.gen_range(16..128);
+            let payload_len = std::cmp::min(buf.len(), 65535);
+            let total_body_len = 2 + payload_len + padding_len;
+
+            let mut body = Vec::with_capacity(total_body_len);
+            body.extend_from_slice(&(payload_len as u16).to_be_bytes());
+            body.extend_from_slice(&buf[..payload_len]);
+            
+            let mut padding = vec![0u8; padding_len];
+            rng.fill(&mut padding[..]);
+            body.extend_from_slice(&padding);
+
+            for (i, b) in body.iter_mut().enumerate() {
                 *b ^= this.xor_key[i % 32];
             }
 
-            let chunk_header = format!("{:x}\r\n", encrypted.len());
+            let chunk_header = format!("{:x}\r\n", total_body_len);
             this.write_buf.extend_from_slice(chunk_header.as_bytes());
-            this.write_buf.extend_from_slice(&encrypted);
+            this.write_buf.extend_from_slice(&body);
             this.write_buf.extend_from_slice(b"\r\n");
         }
+
+        let payload_written = std::cmp::min(buf.len(), 65535);
 
         while this.write_pos < this.write_buf.len() {
             match Pin::new(&mut this.inner).poll_write(cx, &this.write_buf[this.write_pos..]) {
@@ -582,7 +614,7 @@ where
             }
         }
 
-        Poll::Ready(Ok(buf.len()))
+        Poll::Ready(Ok(payload_written))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
