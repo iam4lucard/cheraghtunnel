@@ -406,14 +406,15 @@ pub struct NirvanaStream<S> {
     payload_buf: VecDeque<u8>,
     write_buf: Vec<u8>,
     write_pos: usize,
-    xor_key: u8,
+    xor_key: [u8; 32],
 }
 
 impl<S> NirvanaStream<S> {
     pub fn new(inner: S, token: &str) -> Self {
         use sha2::{Sha256, Digest};
         let hash = Sha256::digest(token.as_bytes());
-        let xor_key = hash[0] ^ hash[1] ^ hash[2] ^ hash[3];
+        let mut xor_key = [0u8; 32];
+        xor_key.copy_from_slice(&hash);
         Self {
             inner,
             read_state: NirvanaReadState::ChunkHeader,
@@ -455,8 +456,14 @@ where
         loop {
             if !this.payload_buf.is_empty() {
                 let to_read = std::cmp::min(buf.remaining(), this.payload_buf.len());
-                let drained: Vec<u8> = this.payload_buf.drain(0..to_read).collect();
-                buf.put_slice(&drained);
+                let (s1, s2) = this.payload_buf.as_slices();
+                if s1.len() >= to_read {
+                    buf.put_slice(&s1[..to_read]);
+                } else {
+                    buf.put_slice(s1);
+                    buf.put_slice(&s2[..to_read - s1.len()]);
+                }
+                this.payload_buf.drain(..to_read);
                 return Poll::Ready(Ok(()));
             }
 
@@ -487,9 +494,8 @@ where
                     let unconsumed = this.read_unconsumed();
                     if unconsumed.len() >= size {
                         let mut payload = unconsumed[..size].to_vec();
-                        let key = this.xor_key;
-                        for b in &mut payload {
-                            *b ^= key;
+                        for (i, b) in payload.iter_mut().enumerate() {
+                            *b ^= this.xor_key[i % 32];
                         }
                         this.payload_buf.extend(payload);
                         this.read_state = NirvanaReadState::ChunkFooter;
@@ -556,9 +562,8 @@ where
             this.write_pos = 0;
 
             let mut encrypted = buf.to_vec();
-            let key = this.xor_key;
-            for b in &mut encrypted {
-                *b ^= key;
+            for (i, b) in encrypted.iter_mut().enumerate() {
+                *b ^= this.xor_key[i % 32];
             }
 
             let chunk_header = format!("{:x}\r\n", encrypted.len());
@@ -789,6 +794,17 @@ fn extract_domain(decoy: &str) -> String {
         host = &host[..pos];
     }
     host.to_string()
+}
+
+fn timing_safe_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut x = 0;
+    for (c1, c2) in a.as_bytes().iter().zip(b.as_bytes().iter()) {
+        x |= c1 ^ c2;
+    }
+    x == 0
 }
 
 // Generates a simple TLS client config that trusts all certificates (necessary for self-signed keys)
@@ -1482,7 +1498,7 @@ pub async fn server_handshake(
                     let diff = (now as i64 - client_time as i64).abs();
                     if diff <= 60 {
                         let expected_hash = format!("{:x}", Sha256::digest(format!("{}{}", token, client_time).as_bytes()));
-                        if client_hash == expected_hash {
+                        if timing_safe_eq(client_hash, &expected_hash) {
                             authenticated = true;
                         }
                     }
