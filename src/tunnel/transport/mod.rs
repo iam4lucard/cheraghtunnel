@@ -391,6 +391,204 @@ where
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NirvanaReadState {
+    ChunkHeader,
+    ChunkBody { size: usize },
+    ChunkFooter,
+}
+
+pub struct NirvanaStream<S> {
+    inner: S,
+    read_state: NirvanaReadState,
+    read_buf: Vec<u8>,
+    read_pos: usize,
+    payload_buf: VecDeque<u8>,
+    write_buf: Vec<u8>,
+    write_pos: usize,
+    xor_key: u8,
+}
+
+impl<S> NirvanaStream<S> {
+    pub fn new(inner: S, token: &str) -> Self {
+        use sha2::{Sha256, Digest};
+        let hash = Sha256::digest(token.as_bytes());
+        let xor_key = hash[0] ^ hash[1] ^ hash[2] ^ hash[3];
+        Self {
+            inner,
+            read_state: NirvanaReadState::ChunkHeader,
+            read_buf: Vec::with_capacity(8192),
+            read_pos: 0,
+            payload_buf: VecDeque::new(),
+            write_buf: Vec::with_capacity(4096),
+            write_pos: 0,
+            xor_key,
+        }
+    }
+
+    #[inline]
+    fn read_unconsumed(&self) -> &[u8] {
+        &self.read_buf[self.read_pos..]
+    }
+
+    #[inline]
+    fn advance_read(&mut self, n: usize) {
+        self.read_pos += n;
+        if self.read_pos >= 4096 {
+            self.read_buf.drain(0..self.read_pos);
+            self.read_pos = 0;
+        }
+    }
+}
+
+impl<S> AsyncRead for NirvanaStream<S>
+where
+    S: AsyncRead + Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        loop {
+            if !this.payload_buf.is_empty() {
+                let to_read = std::cmp::min(buf.remaining(), this.payload_buf.len());
+                let drained: Vec<u8> = this.payload_buf.drain(0..to_read).collect();
+                buf.put_slice(&drained);
+                return Poll::Ready(Ok(()));
+            }
+
+            let mut progress = false;
+            match this.read_state {
+                NirvanaReadState::ChunkHeader => {
+                    let unconsumed = this.read_unconsumed();
+                    if let Some(idx) = unconsumed.windows(2).position(|w| w == b"\r\n") {
+                        let hex_str = String::from_utf8_lossy(&unconsumed[..idx]);
+                        if let Ok(size) = usize::from_str_radix(hex_str.trim(), 16) {
+                            this.read_state = NirvanaReadState::ChunkBody { size };
+                            this.advance_read(idx + 2);
+                            progress = true;
+                        } else {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Invalid hex chunk size in NirvanaStream",
+                            )));
+                        }
+                    } else if unconsumed.len() > 16 {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Chunk size header too long in NirvanaStream",
+                        )));
+                    }
+                }
+                NirvanaReadState::ChunkBody { size } => {
+                    let unconsumed = this.read_unconsumed();
+                    if unconsumed.len() >= size {
+                        let mut payload = unconsumed[..size].to_vec();
+                        let key = this.xor_key;
+                        for b in &mut payload {
+                            *b ^= key;
+                        }
+                        this.payload_buf.extend(payload);
+                        this.read_state = NirvanaReadState::ChunkFooter;
+                        this.advance_read(size);
+                        progress = true;
+                    }
+                }
+                NirvanaReadState::ChunkFooter => {
+                    let unconsumed = this.read_unconsumed();
+                    if unconsumed.len() >= 2 {
+                        if &unconsumed[..2] != b"\r\n" {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Invalid chunk footer in NirvanaStream",
+                            )));
+                        }
+                        this.read_state = NirvanaReadState::ChunkHeader;
+                        this.advance_read(2);
+                        progress = true;
+                    }
+                }
+            }
+
+            if progress {
+                continue;
+            }
+
+            let mut read_temp = [0u8; 4096];
+            let mut read_buf = ReadBuf::new(&mut read_temp);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
+                Poll::Ready(Ok(())) => {
+                    let n = read_buf.filled().len();
+                    if n == 0 {
+                        if this.read_state != NirvanaReadState::ChunkHeader || !this.read_unconsumed().is_empty() {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "Unexpected EOF in NirvanaStream",
+                            )));
+                        }
+                        return Poll::Ready(Ok(()));
+                    }
+                    this.read_buf.extend_from_slice(&read_temp[..n]);
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl<S> AsyncWrite for NirvanaStream<S>
+where
+    S: AsyncWrite + Unpin,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+
+        if this.write_pos >= this.write_buf.len() {
+            this.write_buf.clear();
+            this.write_pos = 0;
+
+            let mut encrypted = buf.to_vec();
+            let key = this.xor_key;
+            for b in &mut encrypted {
+                *b ^= key;
+            }
+
+            let chunk_header = format!("{:x}\r\n", encrypted.len());
+            this.write_buf.extend_from_slice(chunk_header.as_bytes());
+            this.write_buf.extend_from_slice(&encrypted);
+            this.write_buf.extend_from_slice(b"\r\n");
+        }
+
+        while this.write_pos < this.write_buf.len() {
+            match Pin::new(&mut this.inner).poll_write(cx, &this.write_buf[this.write_pos..]) {
+                Poll::Ready(Ok(n)) => {
+                    this.write_pos += n;
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 // Unified transport stream type
 pub enum TransportStream {
     Tcp(TcpStream),
@@ -408,6 +606,7 @@ pub enum TransportStream {
     ObfuscatedWs(ObfuscatedStream<WsByteStream<TcpStream>>),
     ObfuscatedWss(ObfuscatedStream<WsByteStream<ClientTlsStream<TcpStream>>>),
     ObfuscatedWssServer(ObfuscatedStream<WsByteStream<ServerTlsStream<TcpStream>>>),
+    Nirvana(NirvanaStream<TcpStream>),
 }
 
 impl AsyncRead for TransportStream {
@@ -429,6 +628,7 @@ impl AsyncRead for TransportStream {
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_read(cx, buf),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_read(cx, buf),
+            TransportStream::Nirvana(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -452,6 +652,7 @@ impl AsyncWrite for TransportStream {
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_write(cx, buf),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_write(cx, buf),
+            TransportStream::Nirvana(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -469,6 +670,7 @@ impl AsyncWrite for TransportStream {
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_flush(cx),
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_flush(cx),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_flush(cx),
+            TransportStream::Nirvana(s) => Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -486,6 +688,7 @@ impl AsyncWrite for TransportStream {
             TransportStream::ObfuscatedWs(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::ObfuscatedWss(s) => Pin::new(s).poll_shutdown(cx),
             TransportStream::ObfuscatedWssServer(s) => Pin::new(s).poll_shutdown(cx),
+            TransportStream::Nirvana(s) => Pin::new(s).poll_shutdown(cx),
         }
     }
 }
@@ -995,6 +1198,33 @@ pub async fn client_handshake(
             perform_client_upgrade_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
         }
+        "nirvana" => {
+            use sha2::{Sha256, Digest};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let hash = format!("{:x}", Sha256::digest(format!("{}{}", token, timestamp).as_bytes()));
+            let req = format!(
+                "POST /api/v1/telemetry HTTP/1.1\r\n\
+                 Host: {}\r\n\
+                 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n\
+                 Content-Type: application/octet-stream\r\n\
+                 Transfer-Encoding: chunked\r\n\
+                 Cookie: __cf_session_id={}-{}\r\n\
+                 Connection: keep-alive\r\n\r\n",
+                 decoy_str, hash, timestamp
+            );
+            socket.write_all(req.as_bytes()).await?;
+            socket.flush().await?;
+            
+            let mut resp = [0u8; 256];
+            let n = socket.read(&mut resp).await?;
+            let resp_str = String::from_utf8_lossy(&resp[..n]);
+            if !resp_str.contains("200 OK") {
+                return Err("HTTP chunked upgrade failed".into());
+            }
+            
+            Ok(TransportStream::Nirvana(NirvanaStream::new(socket, token)))
+        }
         "aura" | "httpmux" => {
             use sha2::{Sha256, Digest};
             use std::time::{SystemTime, UNIX_EPOCH};
@@ -1203,6 +1433,79 @@ pub async fn server_handshake(
         "beam" | "tcpmux" | "photon" | "quantummux" => {
             perform_server_handshake_check(&mut socket, token).await?;
             Ok(TransportStream::Tcp(socket))
+        }
+        "nirvana" => {
+            use tokio::io::AsyncReadExt;
+            use sha2::{Sha256, Digest};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            
+            let mut header_buf = Vec::new();
+            let mut temp = [0u8; 1];
+            loop {
+                socket.read_exact(&mut temp).await?;
+                header_buf.push(temp[0]);
+                if header_buf.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                if header_buf.len() > 4096 {
+                    return Err("HTTP header limit exceeded".into());
+                }
+            }
+            let req_str = String::from_utf8_lossy(&header_buf);
+
+            // Parse Cookie: __cf_session_id=<hash>-<timestamp>
+            let mut authenticated = false;
+            let mut client_hash = "";
+            let mut client_time_str = "";
+            
+            for line in req_str.lines() {
+                let line_lower = line.to_lowercase();
+                if line_lower.starts_with("cookie:") {
+                    if let Some(cookie_val) = line.split(':').nth(1) {
+                        for cookie in cookie_val.split(';') {
+                            let parts: Vec<&str> = cookie.trim().split('=').collect();
+                            if parts.len() == 2 && parts[0] == "__cf_session_id" {
+                                let val_parts: Vec<&str> = parts[1].split('-').collect();
+                                if val_parts.len() == 2 {
+                                    client_hash = val_parts[0];
+                                    client_time_str = val_parts[1];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !client_hash.is_empty() && !client_time_str.is_empty() {
+                if let Ok(client_time) = client_time_str.parse::<u64>() {
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                    let diff = (now as i64 - client_time as i64).abs();
+                    if diff <= 60 {
+                        let expected_hash = format!("{:x}", Sha256::digest(format!("{}{}", token, client_time).as_bytes()));
+                        if client_hash == expected_hash {
+                            authenticated = true;
+                        }
+                    }
+                }
+            }
+
+            if !authenticated {
+                let decoy_resp = "HTTP/1.1 404 Not Found\r\n\
+                                  Server: Cloudflare\r\n\
+                                  Content-Length: 0\r\n\r\n";
+                let _ = socket.write_all(decoy_resp.as_bytes()).await;
+                return Err("HTTP upgrade auth failed, decoy served".into());
+            }
+
+            let resp = "HTTP/1.1 200 OK\r\n\
+                        Server: Cloudflare\r\n\
+                        Content-Type: application/octet-stream\r\n\
+                        Transfer-Encoding: chunked\r\n\
+                        Connection: keep-alive\r\n\r\n";
+            socket.write_all(resp.as_bytes()).await?;
+            socket.flush().await?;
+
+            Ok(TransportStream::Nirvana(NirvanaStream::new(socket, token)))
         }
         "aura" | "httpmux" => {
             use tokio::io::AsyncReadExt;

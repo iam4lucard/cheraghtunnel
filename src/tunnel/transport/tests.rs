@@ -250,3 +250,8 @@ async fn test_protocol_oracle() {
 async fn test_protocol_vortex() {
     run_handshake_test("vortex", true).await;
 }
+
+#[tokio::test]
+async fn test_protocol_nirvana() {
+    run_handshake_test("nirvana", false).await;
+}
