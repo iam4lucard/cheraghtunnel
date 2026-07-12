@@ -453,72 +453,124 @@ where
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
 
-        loop {
-            if !this.payload_buf.is_empty() {
-                let to_read = std::cmp::min(buf.remaining(), this.payload_buf.len());
-                let (s1, s2) = this.payload_buf.as_slices();
-                if s1.len() >= to_read {
-                    buf.put_slice(&s1[..to_read]);
-                } else {
-                    buf.put_slice(s1);
-                    buf.put_slice(&s2[..to_read - s1.len()]);
-                }
-                this.payload_buf.drain(..to_read);
-                return Poll::Ready(Ok(()));
+        // 1. Yield any pending decoded payload bytes first (fast path).
+        if !this.payload_buf.is_empty() {
+            let n = std::cmp::min(buf.remaining(), this.payload_buf.len());
+            let (slice1, slice2) = this.payload_buf.as_slices();
+            if slice1.len() >= n {
+                buf.put_slice(&slice1[..n]);
+            } else {
+                buf.put_slice(slice1);
+                buf.put_slice(&slice2[..(n - slice1.len())]);
             }
+            this.payload_buf.drain(..n);
+            return Poll::Ready(Ok(()));
+        }
 
-            let mut progress = false;
+        // 2. Pull raw bytes from the inner stream directly into the tail of read_buf.
+        loop {
+            let before = this.read_buf.len();
+            this.read_buf.resize(before + 4096, 0);
+            let mut temp = ReadBuf::new(&mut this.read_buf[before..]);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut temp) {
+                Poll::Ready(Ok(())) => {
+                    let filled = temp.filled().len();
+                    this.read_buf.truncate(before + filled);
+                    if filled == 0 {
+                        if this.read_state != NirvanaReadState::ChunkHeader || !this.read_unconsumed().is_empty() {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "Unexpected EOF in NirvanaStream",
+                            )));
+                        }
+                        return Poll::Ready(Ok(())); // EOF
+                    }
+                }
+                Poll::Ready(Err(e)) => {
+                    this.read_buf.truncate(before);
+                    return Poll::Ready(Err(e));
+                }
+                Poll::Pending => {
+                    this.read_buf.truncate(before);
+                    if this.read_unconsumed().is_empty() {
+                        return Poll::Pending;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 3. Parse as many complete frames as possible from read_buf using cursor.
+        loop {
+            let unconsumed = this.read_unconsumed();
             match this.read_state {
                 NirvanaReadState::ChunkHeader => {
-                    let unconsumed = this.read_unconsumed();
                     if let Some(idx) = unconsumed.windows(2).position(|w| w == b"\r\n") {
                         let hex_str = String::from_utf8_lossy(&unconsumed[..idx]);
                         if let Ok(size) = usize::from_str_radix(hex_str.trim(), 16) {
                             this.read_state = NirvanaReadState::ChunkBody { size };
                             this.advance_read(idx + 2);
-                            progress = true;
                         } else {
                             return Poll::Ready(Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 "Invalid hex chunk size in NirvanaStream",
                             )));
                         }
-                    } else if unconsumed.len() > 16 {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Chunk size header too long in NirvanaStream",
-                        )));
+                    } else {
+                        if unconsumed.len() > 16 {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Chunk size header too long in NirvanaStream",
+                            )));
+                        }
+                        break;
                     }
                 }
                 NirvanaReadState::ChunkBody { size } => {
-                    let unconsumed = this.read_unconsumed();
-                    if unconsumed.len() >= size {
-                        if size < 2 {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "Nirvana chunk body too short",
-                            )));
-                        }
-                        let mut len_bytes = unconsumed[..2].to_vec();
-                        for (i, b) in len_bytes.iter_mut().enumerate() {
-                            *b ^= this.xor_key[i % 32];
-                        }
-                        let payload_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
-                        if 2 + payload_len > size {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "Nirvana payload length out of bounds",
-                            )));
-                        }
-                        let mut payload = unconsumed[2..2 + payload_len].to_vec();
-                        for (i, b) in payload.iter_mut().enumerate() {
-                            *b ^= this.xor_key[(i + 2) % 32];
-                        }
-                        this.payload_buf.extend(payload);
-                        this.read_state = NirvanaReadState::ChunkFooter;
-                        this.advance_read(size);
-                        progress = true;
+                    let start = this.read_pos;
+                    let end_total = start + size;
+                    if this.read_buf.len() < end_total {
+                        break;
                     }
+                    if size < 2 {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Nirvana chunk body too short",
+                        )));
+                    }
+
+                    // XOR decrypt in-place on read_buf (no allocation!)
+                    for i in 0..size {
+                        this.read_buf[start + i] ^= this.xor_key[i % 32];
+                    }
+
+                    let payload_len = u16::from_be_bytes([
+                        this.read_buf[start],
+                        this.read_buf[start + 1],
+                    ]) as usize;
+
+                    if 2 + payload_len > size {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Nirvana payload length out of bounds",
+                        )));
+                    }
+
+                    let payload_start = start + 2;
+                    let payload_end = payload_start + payload_len;
+
+                    // Fast path: skip VecDeque if caller has enough room
+                    if this.payload_buf.is_empty() && buf.remaining() >= payload_len {
+                        buf.put_slice(&this.read_buf[payload_start..payload_end]);
+                        this.advance_read(size);
+                        this.read_state = NirvanaReadState::ChunkFooter;
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    // Fallback to VecDeque
+                    this.payload_buf.extend(&this.read_buf[payload_start..payload_end]);
+                    this.advance_read(size);
+                    this.read_state = NirvanaReadState::ChunkFooter;
                 }
                 NirvanaReadState::ChunkFooter => {
                     let unconsumed = this.read_unconsumed();
@@ -531,35 +583,28 @@ where
                         }
                         this.read_state = NirvanaReadState::ChunkHeader;
                         this.advance_read(2);
-                        progress = true;
+                    } else {
+                        break;
                     }
                 }
-            }
-
-            if progress {
-                continue;
-            }
-
-            let mut read_temp = [0u8; 4096];
-            let mut read_buf = ReadBuf::new(&mut read_temp);
-            match Pin::new(&mut this.inner).poll_read(cx, &mut read_buf) {
-                Poll::Ready(Ok(())) => {
-                    let n = read_buf.filled().len();
-                    if n == 0 {
-                        if this.read_state != NirvanaReadState::ChunkHeader || !this.read_unconsumed().is_empty() {
-                            return Poll::Ready(Err(io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
-                                "Unexpected EOF in NirvanaStream",
-                            )));
-                        }
-                        return Poll::Ready(Ok(()));
-                    }
-                    this.read_buf.extend_from_slice(&read_temp[..n]);
-                }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
             }
         }
+
+        // 4. Yield decoded bytes to the caller.
+        if !this.payload_buf.is_empty() {
+            let n = std::cmp::min(buf.remaining(), this.payload_buf.len());
+            let (slice1, slice2) = this.payload_buf.as_slices();
+            if slice1.len() >= n {
+                buf.put_slice(&slice1[..n]);
+            } else {
+                buf.put_slice(slice1);
+                buf.put_slice(&slice2[..(n - slice1.len())]);
+            }
+            this.payload_buf.drain(..n);
+            return Poll::Ready(Ok(()));
+        }
+
+        Poll::Pending
     }
 }
 
@@ -583,6 +628,12 @@ where
             let padding_len = rng.gen_range(16..128);
             let payload_len = std::cmp::min(buf.len(), 65535);
             let total_body_len = 2 + payload_len + padding_len;
+
+            // Pre-calculate and reserve exact capacity for write_buf to avoid reallocations
+            let total_capacity = 10 + total_body_len + 2;
+            if this.write_buf.capacity() < total_capacity {
+                this.write_buf.reserve(total_capacity - this.write_buf.capacity());
+            }
 
             let mut body = Vec::with_capacity(total_body_len);
             body.extend_from_slice(&(payload_len as u16).to_be_bytes());
