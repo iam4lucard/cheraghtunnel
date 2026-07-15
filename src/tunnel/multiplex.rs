@@ -127,15 +127,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for MonitoredStream<S> {
             self.tracker.bytes_this_sec.fetch_add(buf.len() as u32, Ordering::Relaxed);
         }
 
-        // User-space inter-packet pacing: smooth out burst signatures by sleeping 2ms for writes > 1024 bytes
-        if buf.len() > 1024 {
-            let waker = cx.waker().clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-                waker.wake();
-            });
-            return Poll::Pending;
-        }
+
 
         let res = Pin::new(&mut self.inner).poll_write(cx, buf);
         if let Poll::Ready(Ok(n)) = &res {
