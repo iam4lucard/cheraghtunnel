@@ -851,18 +851,81 @@ pub async fn run_client(
                             let l_service = local_service_clone.clone();
                             let tid = tunnel_id;
                             tokio::spawn(async move {
-                                // Pipe yamux stream directly to local TCP service.
-                                // NOTE: UDP detection was removed because BufReader<yamux::Stream>
-                                // does not implement AsyncWrite, breaking the bidirectional pipe.
-                                // TCP/HTTPS (the primary use case) works correctly with a direct pipe.
-                                let compat_stream = stream.compat();
-                                match connect_to_local(&l_service).await {
-                                    Ok(local_conn) => {
-                                        let _ = crate::common::network::optimize_socket(&local_conn);
-                                        pipe_streams_monitored(compat_stream, local_conn, tid).await;
+                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                                let mut compat_stream = stream.compat();
+                                let mut prefix = [0u8; 4];
+                                
+                                // Read the first 4 bytes with a generous timeout of 5 seconds.
+                                // If it times out or fails, we close the stream.
+                                let read_res = tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    compat_stream.read_exact(&mut prefix)
+                                ).await;
+                                
+                                match read_res {
+                                    Ok(Ok(_)) => {
+                                        let is_udp = &prefix[..4] == b"UDP\n";
+                                        if is_udp {
+                                            // Handle UDP forwarding
+                                            let socket = match UdpSocket::bind("0.0.0.0:0").await {
+                                                Ok(s) => s,
+                                                Err(_) => return,
+                                            };
+                                            let target_addr = match l_service.parse::<std::net::SocketAddr>() {
+                                                Ok(a) => a,
+                                                Err(_) => return,
+                                            };
+                                            let _ = socket.connect(target_addr).await;
+                                            let socket = Arc::new(socket);
+                                            let (mut reader, mut writer) = tokio::io::split(compat_stream);
+                                            
+                                            let socket_clone = socket.clone();
+                                            let mut tx_task = tokio::spawn(async move {
+                                                let mut len_buf = [0u8; 4];
+                                                loop {
+                                                    if reader.read_exact(&mut len_buf).await.is_err() {
+                                                        break;
+                                                    }
+                                                    let len = u32::from_be_bytes(len_buf) as usize;
+                                                    let mut pkt_buf = vec![0u8; len];
+                                                    if reader.read_exact(&mut pkt_buf).await.is_err() {
+                                                        break;
+                                                    }
+                                                    let _ = socket_clone.send(&pkt_buf).await;
+                                                }
+                                            });
+                                            
+                                            let mut rx_task = tokio::spawn(async move {
+                                                let mut buf = vec![0u8; 65535];
+                                                while let Ok(n) = socket.recv(&mut buf).await {
+                                                    let len_bytes = (n as u32).to_be_bytes();
+                                                    if writer.write_all(&len_bytes).await.is_err() || writer.write_all(&buf[..n]).await.is_err() {
+                                                        break;
+                                                    }
+                                                }
+                                            });
+                                            
+                                            tokio::select! {
+                                                _ = &mut tx_task => { rx_task.abort(); }
+                                                _ = &mut rx_task => { tx_task.abort(); }
+                                            }
+                                        } else {
+                                            // TCP: connect to local and forward, writing the prefix first
+                                            match connect_to_local(&l_service).await {
+                                                Ok(mut local_conn) => {
+                                                    let _ = crate::common::network::optimize_socket(&local_conn);
+                                                    if local_conn.write_all(&prefix).await.is_ok() {
+                                                        pipe_streams_monitored(compat_stream, local_conn, tid).await;
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[CLIENT] Failed to connect to local service at {}: {}", l_service, e);
+                                                }
+                                            }
+                                        }
                                     }
-                                    Err(e) => {
-                                        eprintln!("[CLIENT] Failed to connect to local service at {}: {}", l_service, e);
+                                    _ => {
+                                        // Timeout or read error: drop the stream to close connection
                                     }
                                 }
                             });
