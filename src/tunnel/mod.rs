@@ -855,8 +855,10 @@ pub async fn run_client(
                                 let mut compat_stream = stream.compat();
                                 let mut prefix = [0u8; 4];
                                 let mut is_udp = false;
-                                if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_millis(100), compat_stream.read_exact(&mut prefix)).await {
-                                    if &prefix == b"UDP\n" {
+                                let mut read_bytes = 0;
+                                if let Ok(Ok(n)) = tokio::time::timeout(std::time::Duration::from_millis(100), compat_stream.read(&mut prefix)).await {
+                                    read_bytes = n;
+                                    if n >= 4 && &prefix[..4] == b"UDP\n" {
                                         is_udp = true;
                                     }
                                 }
@@ -908,7 +910,9 @@ pub async fn run_client(
                                     match connect_to_local(&l_service).await {
                                         Ok(mut local_conn) => {
                                             let _ = crate::common::network::optimize_socket(&local_conn);
-                                            let _ = local_conn.write_all(&prefix).await;
+                                            if read_bytes > 0 {
+                                                let _ = local_conn.write_all(&prefix[..read_bytes]).await;
+                                            }
                                             pipe_streams_monitored(compat_stream, local_conn, tid).await;
                                         }
                                         Err(e) => {
