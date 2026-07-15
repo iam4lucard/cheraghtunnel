@@ -851,19 +851,27 @@ pub async fn run_client(
                             let l_service = local_service_clone.clone();
                             let tid = tunnel_id;
                             tokio::spawn(async move {
-                                use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                                let mut compat_stream = stream.compat();
-                                let mut prefix = [0u8; 4];
-                                let mut is_udp = false;
-                                let mut read_bytes = 0;
-                                if let Ok(Ok(n)) = tokio::time::timeout(std::time::Duration::from_millis(100), compat_stream.read(&mut prefix)).await {
-                                    read_bytes = n;
-                                    if n >= 4 && &prefix[..4] == b"UDP\n" {
-                                        is_udp = true;
-                                    }
-                                }
+                                use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncBufReadExt};
+                                let compat_stream = stream.compat();
+                                
+                                // Use a BufReader to allow non-destructive peeking of the first 4 bytes
+                                // This avoids cancel-safety issues with yamux streams
+                                let mut buf_stream = tokio::io::BufReader::with_capacity(8192, compat_stream);
+                                
+                                // Peek at the first 4 bytes to detect UDP marker "UDP\n"
+                                // fill_buf is cancel-safe and doesn't consume data
+                                let is_udp = match tokio::time::timeout(
+                                    std::time::Duration::from_millis(500),
+                                    buf_stream.fill_buf()
+                                ).await {
+                                    Ok(Ok(buf)) => buf.len() >= 4 && &buf[..4] == b"UDP\n",
+                                    _ => false,
+                                };
                                 
                                 if is_udp {
+                                    // Consume the "UDP\n" marker
+                                    buf_stream.consume(4);
+                                    
                                     let socket = match UdpSocket::bind("0.0.0.0:0").await {
                                         Ok(s) => s,
                                         Err(_) => return,
@@ -874,7 +882,7 @@ pub async fn run_client(
                                     };
                                     let _ = socket.connect(target_addr).await;
                                     let socket = Arc::new(socket);
-                                    let (mut reader, mut writer) = tokio::io::split(compat_stream);
+                                    let (mut reader, mut writer) = tokio::io::split(buf_stream);
                                     
                                     let socket_clone = socket.clone();
                                     let mut tx_task = tokio::spawn(async move {
@@ -907,13 +915,11 @@ pub async fn run_client(
                                         _ = &mut rx_task => { tx_task.abort(); }
                                     }
                                 } else {
+                                    // TCP: pipe directly — all buffered data is preserved
                                     match connect_to_local(&l_service).await {
-                                        Ok(mut local_conn) => {
+                                        Ok(local_conn) => {
                                             let _ = crate::common::network::optimize_socket(&local_conn);
-                                            if read_bytes > 0 {
-                                                let _ = local_conn.write_all(&prefix[..read_bytes]).await;
-                                            }
-                                            pipe_streams_monitored(compat_stream, local_conn, tid).await;
+                                            pipe_streams_monitored(buf_stream, local_conn, tid).await;
                                         }
                                         Err(e) => {
                                             eprintln!("[CLIENT] Failed to connect to local service at {}: {}", l_service, e);
