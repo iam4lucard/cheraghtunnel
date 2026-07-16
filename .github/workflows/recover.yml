@@ -1,0 +1,20 @@
+name: Recovery SSH
+on:
+  push:
+    branches:
+      - main
+jobs:
+  ssh-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Try SSH over IPv6
+        run: |
+          echo "Attempting SSH to IPv6 address..."
+          sshpass -p 'Merlin1994' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@[2a03:90c0:5f1:2903::e91] 'warp-cli --accept-tos disconnect || systemctl stop warp-svc' && echo "SUCCESS IPv6" || echo "FAILED IPv6"
+      - name: Try SSH over IPv4
+        run: |
+          echo "Attempting SSH to IPv4 address..."
+          sshpass -p 'Merlin1994' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@92.223.2.251 'warp-cli --accept-tos disconnect || systemctl stop warp-svc' && echo "SUCCESS IPv4" || echo "FAILED IPv4"
