@@ -94,17 +94,17 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for MonitoredStream<S> {
         }
 
         // Enforce speed limit with RTT-based BBR-like congestion pacing
-        let rtt = self.tracker.rtt_ms.load(Ordering::Relaxed);
-        let speed_limit = if rtt > 400 && rtt < 999 {
-            // High RTT detected! Restrict speed to 250 KB/s to drain queue buffers
-            let conf_limit = self.tracker.speed_limit.load(Ordering::Relaxed);
-            if conf_limit > 0 {
+        let conf_limit = self.tracker.speed_limit.load(Ordering::Relaxed);
+        let speed_limit = if conf_limit > 0 {
+            let rtt = self.tracker.rtt_ms.load(Ordering::Relaxed);
+            if rtt > 400 && rtt < 999 {
+                // High RTT detected! Restrict speed to 250 KB/s to drain queue buffers
                 std::cmp::min(conf_limit, 250)
             } else {
-                250
+                conf_limit
             }
         } else {
-            self.tracker.speed_limit.load(Ordering::Relaxed)
+            0
         };
 
         if speed_limit > 0 {
