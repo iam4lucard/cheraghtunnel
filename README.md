@@ -1,8 +1,10 @@
 <div align="center">
  
-# 🕯️ CheraghTunnel (چراغ‌تونل)
- 
-**سامانه جامع مدیریت و استقرار تونل معکوس پیشرفته با کارایی فوق‌العاده بالا — نوشته‌شده با Rust**
+# 🕯️ CheraghTunnel
+
+**Advanced, High-Performance Reverse Tunneling System & Stealth Proxy Engine — Built with Rust**
+
+[🇮🇷 راهنمای فارسی (Persian Documentation)](README_FA.md)
  
 [![GitHub Release](https://img.shields.io/github/v/release/iam4lucard/cheraghtunnel?style=for-the-badge&logo=github&color=f59e0b)](https://github.com/iam4lucard/cheraghtunnel/releases/latest)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/iam4lucard/cheraghtunnel/release.yml?style=for-the-badge&logo=github-actions&label=CI)](https://github.com/iam4lucard/cheraghtunnel/actions)
@@ -11,122 +13,124 @@
  
 <br/>
  
-**چراغ‌تونل** یک پروژه امنیتی، یکپارچه و متن‌باز برای دور زدن محدودیت‌های شدید اینترنت و برقراری ارتباط سرور به سرور (معکوس) است. این سامانه شامل هسته قدرتمند کلاینت/سرور، موتور پروکسی چندپروتکله و پنل وب مدرن با رابط کاربری گلس‌مورفیک (Glassmorphism) است که همگی در قالب **یک باینری واحد استاتیک** بدون هیچ‌گونه وابستگی خارجی کامپایل شده‌اند.
+**CheraghTunnel** is an all-in-one, ultra-fast, security-focused reverse tunneling system engineered to bypass severe network censorship and establish stealthy server-to-server connections. It packages a multi-protocol proxy engine, zero-latency handshakes, AI/DPI-evasion transports, automated SSH node deployment, and a modern Glassmorphism Web Panel into a **single static binary with zero external dependencies**.
  
 <br/>
  
-**`< 15 MB RAM`** &nbsp;•&nbsp; **`< 7 MB Binary`** &nbsp;•&nbsp; **`Zero Dependencies`** &nbsp;•&nbsp; **`Single Binary`**
+**`< 15 MB RAM`** &nbsp;•&nbsp; **`< 7 MB Binary`** &nbsp;•&nbsp; **`Zero External Dependencies`** &nbsp;•&nbsp; **`Single Binary`**
  
 </div>
  
 ---
- 
-## 📑 فهرست مطالب
- 
-- [ویژگی‌های کلیدی](#-ویژگی‌های-کلیدی)
-- [پروتکل‌های انتقال (Transports)](#-پروتکل‌های-انتقال-transports)
-- [پنل مدیریت تحت وب](#-پنل-مدیریت-تحت-وب)
-- [نصب سریع](#-نصب-سریع)
-- [راهنمای استفاده CLI](#-راهنمای-استفاده-cli)
-- [مکانیسم امنیتی و استتار](#-مکانیسم-امنیتی-و-استتار)
-- [توسعه و کامپایل از سورس](#-توسعه-و-کامپایل-از-سورس)
-- [لایسنس](#-لایسنس)
- 
+
+## 📑 Table of Contents
+
+- [Key Features](#-key-features)
+- [Transport Protocols](#-transport-protocols)
+- [Web Management Panel](#-web-management-panel)
+- [Quick Start](#-quick-start)
+- [CLI Usage Guide](#-cli-usage-guide)
+- [Security & Anti-Censorship Mechanisms](#-security--anti-censorship-mechanisms)
+- [Building from Source](#-building-from-source)
+- [License](#-license)
+
 ---
- 
-## ✨ ویژگی‌های کلیدی
- 
-* 🚀 **۱۶ پروتکل انتقال متنوع:** از TCP ساده تا لایه‌های WebRTC ،Reality ،Pulsar و پروتکل‌های خلاقانه اختصاصی مانند Spectre، Oracle، Vortex و Nirvana جهت عبور از دیوارهای آتش مختلف بر اساس شرایط شبکه.
-* ⚡ **هندشیک بدون تاخیر (0-RTT):** ارسال کلیدهای امنیتی و داده‌ها به صورت همزمان در اولین پکت ارسالی و حذف تاخیر RTT اولیه اتصال در پروتکل‌های `Spectre` ،`Mirage` ،`Nirvana` و `Beam`.
-* 🔀 **توزیع چندمسیری پکت‌ها (Multipath Spraying):** تقسیم و ارسال پکت‌های بازی روی ۸ اتصال فیزیکی موازی TCP در پروتکل `Spectre` جهت دور زدن کامل مشکل Head-of-Line blocking در شبکه.
-* 🔄 **پرش پورت پویا (Dynamic Port Hopping):** تغییر زمان‌بندی‌شده و رمزنگاری‌شده‌ی پورت کنترلر (هر ۵ دقیقه) روی سرور ایران جهت خنثی‌سازی فیلترینگ فعال بر اساس پورت و رفتارسنجی شبکه.
-* ⚙️ **استقرار خودکار تک‌کلیکی (SSH Auto-Deploy):** پیکربندی و اجرای خودکار کلاینت روی سرور خارج به کمک اتصال SSH (پشتیبانی از نام‌کاربری/کلمه عبور و کلیدهای خصوصی SSH با پایداری حداکثری Stdin Piping).
-* 💾 **پشتیبان‌گیری و بازیابی یکپارچه:** دانلود آسان کل تنظیمات، نودها و تانل‌ها در قالب یک فایل پشتیبان SQLite و امکان بازیابی آنی آن از طریق پنل بدون نیاز به ری‌استارت سرور.
-* 📉 **Telemetry و پایش زنده کیفیت:** رسم نمودارهای گرافیکی لحظه‌ای از میزان پینگ (RTT) و پکت‌لاست (Packet Loss) بین سرور ایران و خارج به همراه مانیتور سخت‌افزاری زنده (CPU/RAM).
-* 🛡️ **وب‌سرور فریبنده (Decoy Defense):** پاسخ‌دهی هوشمند به اسکن‌های فعال (Active Probing) فیلترینگ با شبیه‌سازی وب‌سایت‌های معتبر یا ریدایرکت خودکار ترافیک غیرمجاز.
-* 📦 **سبک و بدون وابستگی:** کل سرور پنل وب، کلاینت، موتور رله و پایگاه‌داده‌ی بومی SQLite در یک فایل باینری با مصرف رم ناچیز قرار دارند.
- 
+
+## ✨ Key Features
+
+* 🚀 **16 Advanced Transport Protocols:** From multiplexed TCP (`Beam`) to Reality TLS (`Mirage`), WebRTC (`Halo`), QUIC (`Pulsar`), and specialized stealth game transports (`Spectre`, `Oracle`, `Vortex`, `Nirvana`).
+* ⚡ **Zero-RTT (0-RTT) Handshakes:** Instant security key exchange embedded directly within the first packet, eliminating initial round-trip connection latency in `Spectre`, `Mirage`, `Nirvana`, and `Beam`.
+* 🔒 **Dynamic Packet Length Padding:** Injects 0–256 randomized padding bytes into payload frames to dismantle DPI packet-size signatures.
+* 📡 **Dummy Chaffing Traffic:** Emits periodic background dummy traffic during connection silences to neutralize ML-based timing analysis.
+* 🛡️ **Encrypted ClientHello (ECH) Simulation:** Appends ECH extension (`0xfe0d`) and authentic Chrome 126+ / Firefox 128+ TLS extension order in `Spectre` & `Mirage`.
+* 🔀 **Multipath IP Spraying:** Evenly distributes client worker connections across multiple remote server IPs simultaneously.
+* 🔄 **Automated Node Health & Live Failover:** 10-second background TCP/RTT health monitor that automatically reroutes active tunnels to backup nodes upon server unreachability.
+* 🔀 **Dynamic Port Hopping:** Time-based, cryptographically synchronized control port rotation (every 5 mins) to defeat active port-blocking firewalls.
+* ⚙️ **One-Click Automated SSH Deployment:** Provision remote nodes via embedded SSH automation (supports password and private key authentication).
+* ⏳ **Quota, Speed & Expiry Limits:** Set strict data caps (GB), bandwidth limits (KB/s), and expiration dates per tunnel.
+* 📊 **Real-Time WebSocket Telemetry:** Live streaming dashboard for RTT latency, packet loss, bandwidth (Down/Up), and CPU/RAM usage.
+* 🛡️ **Decoy Defense System:** Intelligent active probing defense simulating legitimate web domain responses for unauthorized scanner probes.
+
 ---
- 
-## 🔌 پروتکل‌های انتقال (Transports)
- 
-| پروفایل | شناسه فنی | لایه انتقال | توضیحات | بهترین کاربرد |
+
+## 🔌 Transport Protocols
+
+| Profile | Technical ID | Transport Layer | Features | Ideal Use Case |
 |:---:|:---:|:---:|:---|:---|
-| 🔵 **Beam** | `tcpmux` | TCP (0-RTT) | ارتباط ساده و بسیار سریع TCP موازی با احراز هویت بدون تاخیر | عمومی و پرسرعت |
-| 🟢 **Aura** | `httpmux` | HTTP | شبیه‌سازی ترافیک و هدرهای معمولی وب HTTP/1.1 | شبکه‌های بسیار محدود |
-| 🟡 **Nova** | `httpsmux` | HTTPS | انتقال تماماً رمزنگاری‌شده با TLS معتبر و کامل | امنیت حداکثری |
-| 🟣 **Glimmer** | `wsmux` | WebSocket | وب‌سوکت ساده جهت عبور از شبکه‌های توزیع محتوا | عبور از CDN |
-| 🔴 **Beacon** | `wssmux` | WSS | وب‌سوکت امن با لایه TLS — سازگار با کلودفلر | CDN با امنیت بالا |
-| ⚡ **Flash** | `kcpmux` | KCP/UDP | پروتکل سرعت بالای گیمینگ مبتنی بر UDP | بازی‌های آنلاین و پینگ پایین |
-| 🌊 **Ray** | `rawmux` | Raw UDP | ارتباط مستقیم KCP با کمترین اورهد در سطح سوکت | ارتباطات بلادرنگ |
-| ⚛️ **Photon** | `quantummux` | TCP+FEC | ترکیب نوآورانه‌ی TCP و KCP با تصحیح خطا بدون استفاده از UDP | دور زدن فیلترینگ UDP |
-| 🏮 **Lantern** | `tunmux` | TUN L2/L3 | تونل سطح شبکه با ساخت اینترفیس مجازی سیستم‌عامل | انتقال کل ترافیک سیستم |
-| 🌫️ **Mirage** | `realitymux` | Reality TLS (0-RTT) | جعل گواهینامه TLS 1.3 سایت‌های معتبر با هندشیک بدون تاخیر | عبور از فایروال‌های هوشمند DPI |
-| 👼 **Halo** | `webrtcmux` | WebRTC | شبیه‌سازی پکت‌ها مشابه تماس‌های صوتی/تصویری اینترنتی | دور زدن DPI سخت‌گیرانه |
-| 💫 **Pulsar** | `pulsar` | QUIC/UDP | پروتکل پالس‌محور و پرسرعت بر پایه QUIC با قابلیت کنترل جریان | شبکه‌های دارای نوسان و نویز |
-| 🔮 **Oracle** | `oracle` | DNS/UDP | شبیه‌سازی کوئری‌های معتبر DNS با افزونه‌های EDNS0 روی پورت ۵۳ | دور زدن فیلترینگ شدید UDP |
-| 🌀 **Vortex** | `vortex` | Steam/UDP | شبیه‌سازی پکت‌های پینگ و کوئری سرور بازی‌های آنلاین (Source Engine) | گیمینگ با QoS اولویت بالا |
-| 🕉️ **Nirvana** | `nirvana` | HTTP/TCP (0-RTT) | شبیه‌سازی هوشمند درخواست‌های وب POST با متد Chunked و رمزنگاری XOR | استتار کامل ترافیک TCP با سرعت بالا |
-| 👻 **Spectre** | `spectre` | Multipath TCP (0-RTT) | پروتکل فوق‌سریع بازی با قابلیت 0-RTT Reality TLS و مالتی‌پس (Multipath Spraying) | گیمینگ با پینگ کاملاً تخت و ثابت |
- 
+| 🔵 **Beam** | `tcpmux` | TCP (0-RTT) | High-speed parallel TCP multiplexing with 0-RTT auth | General high-throughput |
+| 🟢 **Aura** | `httpmux` | HTTP | HTTP/1.1 header and request masquerading | Highly restricted networks |
+| 🟡 **Nova** | `httpsmux` | HTTPS | Pure TLS encrypted transport stream | Maximum confidentiality |
+| 🟣 **Glimmer** | `wsmux` | WebSocket | Standard WebSocket framing for CDN routing | CDN traversal |
+| 🔴 **Beacon** | `wssmux` | WSS | Secure WebSocket with TLS layer (Cloudflare compatible) | High-security CDN |
+| ⚡ **Flash** | `kcpmux` | KCP/UDP | Low-latency sliding-window UDP protocol | Online gaming & low ping |
+| 🌊 **Ray** | `rawmux` | Raw UDP | Direct KCP socket binding with minimal overhead | Real-time audio/video |
+| ⚛️ **Photon** | `quantummux` | TCP+FEC | Hybrid TCP & KCP with Forward Error Correction without UDP | Bypassing UDP blocks |
+| 🏮 **Lantern** | `tunmux` | TUN L2/L3 | System-level network interface virtualization | Full system tunneling |
+| 🌫️ **Mirage** | `realitymux` | Reality TLS (0-RTT) | Real TLS 1.3 certificate spoofing with zero-RTT handshake | Advanced DPI firewalls |
+| 👼 **Halo** | `webrtcmux` | WebRTC | Masquerades packets as P2P voice/video calls | Strict DPI censorship |
+| 💫 **Pulsar** | `pulsar` | QUIC/UDP | QUIC-based pulse protocol with adaptive flow control | Lossy & noisy networks |
+| 🔮 **Oracle** | `oracle` | DNS/UDP | Valid DNS query/response mimicry with EDNS0 on port 53 | Severe UDP censorship |
+| 🌀 **Vortex** | `vortex` | Steam/UDP | Source Engine game query/ping packet mimicry | Gaming with high QoS |
+| 🕉️ **Nirvana** | `nirvana` | HTTP/TCP (0-RTT) | Chunked HTTP POST request obfuscation with XOR cipher | High-speed stealth TCP |
+| 👻 **Spectre** | `spectre` | Multipath TLS (0-RTT) | Ultra-fast gaming transport with 0-RTT Reality TLS & Multipath Spraying | Competitive gaming with flat ping |
+
 ---
- 
-## 🎨 پنل مدیریت تحت وب
- 
-پنل وب چراغ‌تونل امکان مدیریت بدون نیاز به خط فرمان را با امکانات زیر فراهم می‌سازد:
-* **داشبورد مانیتورینگ:** نمایش درصد مصرف منابع سرور (سی‌پی‌یو و رم) به همراه وضعیت اتصالات فعال به صورت پویا.
-* **مدیریت نودها (Iran/Kharej):** تعریف سرورها با نقش‌های مختلف و ثبت اطلاعات SSH جهت استقرار خودکار کلاینت‌ها.
-* **ایجاد و ویرایش تانل:** امکان تغییر لحظه‌ای پروتکل، پورت‌ها، دکوی دلخواه (Decoy URL)، استتار و فعال/غیرفعال‌سازی پرش پورت (Port Hopping) تنها با چند کلیک.
-* **بخش پشتیبان‌گیری:** دانلود نسخه پشتیبان دیتابیس و آپلود آنی جهت بازیابی کل سیستم در سرور جدید.
- 
+
+## 🎨 Web Management Panel
+
+The built-in Web Management Panel provides a sleek, code-free administration experience:
+* **Live Telemetry Dashboard:** Full-duplex WebSocket streaming of CPU, RAM, bandwidth, and latency matrix.
+* **Node Management:** Register Iran and Kharej nodes with SSH credentials for automated remote deployment.
+* **Tunnel Configuration:** Toggle protocols, ports, Decoy URLs, Dynamic Padding, ECH, Chaffing, and Port Hopping in seconds.
+* **Backup & Restore:** One-click SQLite database export and instant web restore without system restarts.
+
 ---
- 
-## 🚀 نصب سریع
- 
-### روش اول: اسکریپت نصب خودکار (توصیه‌شده)
- 
-برای نصب خودکار پنل مدیریتی، دستور زیر را به عنوان کاربر `root` روی سرور ایران خود اجرا کنید:
- 
+
+## 🚀 Quick Start
+
+### Method 1: Automated Installer (Recommended)
+
+Run the automated interactive installation script as `root` on your main server:
+
 ```bash
 curl -sSf https://raw.githubusercontent.com/iam4lucard/cheraghtunnel/main/install.sh | bash
 ```
- 
-این اسکریپت مراحل نصب را به صورت تعاملی پیش برده و موارد زیر را از شما می‌پرسد:
-* **پورت پنل وب:** پورتی که پنل روی آن بالا می‌آید (پیش‌فرض: `8000`).
-* **نام کاربری و رمز عبور:** مشخصات ورود ادمین برای قفل امنیتی پنل.
- 
-پس از پایان، سرویس پنل وب به صورت یک سرویس `systemd` به نام `cheraghtunnel` ثبت شده و در پس‌زمینه اجرا می‌شود.
- 
-### روش دوم: دانلود مستقیم باینری آماده
- 
-شما می‌توانید مستقیماً باینری کامپایل‌شده‌ی آخرین نسخه را برای پلتفرم خود دریافت کنید:
- 
+
+The script will guide you through:
+* Setting the Web Panel port (default: `8000`).
+* Creating administrative username and password credentials.
+* Registering `cheraghtunnel` as a background `systemd` daemon.
+
+### Method 2: Direct Binary Download
+
+Download pre-compiled static binaries directly from GitHub releases:
+
 ```bash
-# نسخه‌ی لینوکس (amd64)
+# Linux (amd64)
 curl -sSfL -o /usr/local/bin/cheraghtunnel \
   https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-amd64
 chmod +x /usr/local/bin/cheraghtunnel
- 
-# نسخه‌ی لینوکس (arm64)
+
+# Linux (arm64)
 curl -sSfL -o /usr/local/bin/cheraghtunnel \
   https://github.com/iam4lucard/cheraghtunnel/releases/latest/download/cheraghtunnel-linux-arm64
 chmod +x /usr/local/bin/cheraghtunnel
 ```
- 
+
 ---
- 
-## 💻 راهنمای استفاده CLI
- 
-در صورتی که می‌خواهید هسته تونل را بدون پنل وب و به صورت دستی در خط فرمان اجرا کنید:
- 
-### ۱. اجرای پنل وب با خط فرمان
- 
+
+## 💻 CLI Usage Guide
+
+If you prefer running CheraghTunnel core manually via command line:
+
+### 1. Launch Web Panel
+
 ```bash
 cheraghtunnel panel --port 8000 --db-path /var/lib/cheraghtunnel/cheraghtunnel.db
 ```
- 
-### ۲. اجرای سرور (ایران)
- 
+
+### 2. Launch Server (Iran Node)
+
 ```bash
 cheraghtunnel server \
   --control-port 8090 \
@@ -136,9 +140,9 @@ cheraghtunnel server \
   --decoy https://www.microsoft.com \
   --port-hopping
 ```
- 
-### ۳. اجرای کلاینت (خارج)
- 
+
+### 3. Launch Client (Kharej Node)
+
 ```bash
 cheraghtunnel client \
   --server-ip 62.60.202.4 \
@@ -150,49 +154,49 @@ cheraghtunnel client \
   --tunnel-id 1 \
   --port-hopping
 ```
- 
+
 ---
- 
-## 🔒 مکانیسم امنیتی و استتار
- 
-چراغ‌تونل امنیت لایه‌ای و حریم خصوصی را با ویژگی‌های پیشرفته تضمین می‌کند:
-* **مقایسه‌های زمان‌ثابت (Constant-Time Operations):** جلوگیری از حملات کانال جانبی تحلیل زمان (Timing Attacks) در زمان احراز هویت توکن‌ها.
-* **پدافند غیرعامل در برابر اسکن‌های فعال (Decoy):** در صورتی که هرگونه درخواست غیرمجاز (مانند ربات‌های شناسایی فیلترینگ) به پورت کنترلر ارسال شود، سیستم به طور خودکار پاسخ‌های فریبنده یا ریدایرکت به وب‌سایت‌های معتبر را شبیه‌سازی می‌کند.
-* **Rate Limiting هوشمند:** محافظت از پنل وب در برابر حملات Brute-force با محدودسازی تعداد ورود‌های ناموفق.
-* **مکانیزم پاکسازی آنی پورت‌ها:** استفاده از آپشن‌های سوکت سیستم‌عامل (`SO_REUSEADDR` و `SO_REUSEPORT`) جهت آزادسازی فوری پورت‌ها هنگام تغییر وضعیت تانل بدون اشغال شدن پورت.
- 
+
+## 🔒 Security & Anti-Censorship Mechanisms
+
+CheraghTunnel incorporates defense-in-depth security principles:
+* **Constant-Time Operations:** Protects token verification against timing side-channel attacks.
+* **Active Probing Defense (Decoy):** Unauthorized probes sent to the control port are greeted with simulated decoy web responses or redirects to target domains.
+* **Brute-Force Protection:** Rate limits failed login attempts to safeguard the administrative panel.
+* **Instant Port Release:** Employs socket options (`SO_REUSEADDR` & `SO_REUSEPORT`) for immediate socket re-binding without TIME_WAIT port lockups.
+
 ---
- 
-## 🛠 توسعه و کامپایل از سورس
- 
-### پیش‌نیازها
-* [Rust و Cargo](https://rustup.rs/) نسخه 1.75 یا بالاتر
-* کتابخانه توسعه SQLite (`libsqlite3-dev` در توزیع‌های دبیان/اوبونتو)
- 
-### مراحل ساخت
- 
+
+## 🛠 Building from Source
+
+### Prerequisites
+* [Rust & Cargo](https://rustup.rs/) 1.75 or later
+* SQLite development headers (`libsqlite3-dev` on Debian/Ubuntu)
+
+### Build Steps
+
 ```bash
-# کلون ریپازیتوری
+# Clone the repository
 git clone https://github.com/iam4lucard/cheraghtunnel.git
 cd cheraghtunnel
- 
-# بیلد نسخه نهایی (Release)
+
+# Build release binary
 cargo build --release
- 
-# اجرای فایل خروجی
+
+# Run executable
 ./target/release/cheraghtunnel panel --port 8000
 ```
- 
+
 ---
- 
-## 📜 لایسنس
- 
-این پروژه تحت لایسنس **[MIT](LICENSE)** توسعه داده می‌شود و استفاده، ویرایش و توزیع آن به هر شکلی کاملاً آزاد و رایگان است.
- 
+
+## 📜 License
+
+CheraghTunnel is open-source software licensed under the **[MIT License](LICENSE)**.
+
 <div align="center">
- 
-**ساخته‌شده با ❤️ و قدرت Rust**
- 
-[🐛 گزارش مشکلات](https://github.com/iam4lucard/cheraghtunnel/issues) &nbsp;•&nbsp; [💡 ثبت ایده جدید](https://github.com/iam4lucard/cheraghtunnel/issues) &nbsp;•&nbsp; [📦 نسخه‌های منتشر شده](https://github.com/iam4lucard/cheraghtunnel/releases)
- 
+
+**Built with ❤️ and the power of Rust**
+
+[🐛 Report Issues](https://github.com/iam4lucard/cheraghtunnel/issues) &nbsp;•&nbsp; [💡 Feature Requests](https://github.com/iam4lucard/cheraghtunnel/issues) &nbsp;•&nbsp; [📦 Releases](https://github.com/iam4lucard/cheraghtunnel/releases)
+
 </div>
