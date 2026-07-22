@@ -237,7 +237,8 @@ pub async fn run_server(
                         let rtt_ms = start.elapsed().as_secs_f64() * 1000.0;
                         drop(stream);
                         let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
-                        tracker.rtt_ms.store(rtt_ms as u32, std::sync::atomic::Ordering::Relaxed);
+                        let rtt_val = (rtt_ms as u32).max(1);
+                        tracker.rtt_ms.store(rtt_val, std::sync::atomic::Ordering::Relaxed);
                     } else {
                         let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
                         tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
