@@ -161,9 +161,23 @@ async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
                         }
 
                         let api_port = 18000 + t.id.unwrap_or(0) as u16;
-                        let url = format!("http://127.0.0.1:{}/api/stats", api_port);
+                        let iran_host = if let Some(i_id) = t.iran_node_id {
+                            if let Ok(Some(i_node)) = db::get_node_by_id(&db_path_clone, i_id) {
+                                i_node.host
+                            } else {
+                                "127.0.0.1".to_string()
+                            }
+                        } else {
+                            "127.0.0.1".to_string()
+                        };
+                        let url = format!("http://{}:{}/api/stats", iran_host, api_port);
                         
-                        if let Ok(resp) = reqwest::get(&url).await {
+                        let client = reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(2))
+                            .build()
+                            .unwrap_or_default();
+
+                        if let Ok(resp) = client.get(&url).send().await {
                             if let Ok(json) = resp.json::<serde_json::Value>().await {
                                 let rx_delta = json["rx_delta"].as_u64().unwrap_or(0);
                                 let tx_delta = json["tx_delta"].as_u64().unwrap_or(0);
