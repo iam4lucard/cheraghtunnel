@@ -1,6 +1,7 @@
 pub mod multiplex;
 pub mod faketcp;
 pub mod transport;
+pub mod bonding;
 
 use std::error::Error;
 use std::sync::Arc;

@@ -35,7 +35,7 @@ pub struct TransportOptions {
     #[serde(default)]
     pub enable_multipath: bool,
 
-    // New Transport Enhancements (v1.17.0)
+    // New Transport Enhancements (v1.17.0 - v1.20.0)
     #[serde(default)]
     pub enable_jitter: bool,
     #[serde(default = "default_jitter_ms")]
@@ -46,6 +46,14 @@ pub struct TransportOptions {
     pub enable_adaptive_fec: bool,
     #[serde(default)]
     pub enable_fallback: bool,
+    #[serde(default)]
+    pub enable_bonding: bool,
+    #[serde(default)]
+    pub enable_ebpf: bool,
+    #[serde(default)]
+    pub custom_sni: Option<String>,
+    #[serde(default)]
+    pub mtu_size: Option<u32>,
 }
 
 fn default_fragment_size() -> usize {

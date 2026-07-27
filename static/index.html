@@ -418,6 +418,26 @@
                                 <label for="edit-enable-multipath" style="margin: 0; font-size: 0.9rem;">🌐 Multipath IP Spraying</label>
                             </div>
                         </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-enable-bonding" style="width: auto;">
+                                <label for="edit-enable-bonding" style="margin: 0; font-size: 0.9rem;">🔀 Multi-Path Tunnel Bonding</label>
+                            </div>
+                            <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="edit-enable-ebpf" style="width: auto;">
+                                <label for="edit-enable-ebpf" style="margin: 0; font-size: 0.9rem;">⚡ eBPF Kernel Fast-Path</label>
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-bottom: 10px;">
+                            <div class="form-group">
+                                <label for="edit-custom-sni">Real-Domain TLS SNI Masquerade</label>
+                                <input type="text" id="edit-custom-sni" placeholder="e.g. cdn.cloudflare.com, aparat.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="edit-mtu-size">Dynamic MTU Clamping (bytes)</label>
+                                <input type="number" id="edit-mtu-size" value="1380" min="1200" max="1500">
+                            </div>
+                        </div>
                     </div>
                 </div>
 

@@ -545,6 +545,10 @@ async function showEditModal(id) {
             document.getElementById('edit-enable-chaffing').checked = !!initialOpts.enable_chaffing;
             document.getElementById('edit-enable-ech').checked = !!initialOpts.enable_ech;
             document.getElementById('edit-enable-multipath').checked = !!initialOpts.enable_multipath;
+            document.getElementById('edit-enable-bonding').checked = !!initialOpts.enable_bonding;
+            document.getElementById('edit-enable-ebpf').checked = !!initialOpts.enable_ebpf;
+            document.getElementById('edit-custom-sni').value = initialOpts.custom_sni || '';
+            document.getElementById('edit-mtu-size').value = initialOpts.mtu_size !== undefined ? initialOpts.mtu_size : 1380;
         } else {
             document.getElementById('edit-fragment-sni').checked = false;
             document.getElementById('edit-fragment-size').value = 5;
@@ -553,6 +557,10 @@ async function showEditModal(id) {
             document.getElementById('edit-enable-chaffing').checked = false;
             document.getElementById('edit-enable-ech').checked = false;
             document.getElementById('edit-enable-multipath').checked = false;
+            document.getElementById('edit-enable-bonding').checked = false;
+            document.getElementById('edit-enable-ebpf').checked = false;
+            document.getElementById('edit-custom-sni').value = '';
+            document.getElementById('edit-mtu-size').value = 1380;
         }
 
         renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
@@ -604,9 +612,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Generate token in edit modal
-    document.getElementById('edit-gen-token-btn').addEventListener('click', () => {
-        const randToken = Array.from({length: 10}, () => Math.random().toString(36).charAt(2).toUpperCase()).join('');
+    document.getElementById('gen-edit-token-btn').addEventListener('click', () => {
+        const randToken = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
         document.getElementById('edit-tunnel-token').value = randToken;
     });
 
@@ -622,6 +629,10 @@ document.addEventListener('DOMContentLoaded', () => {
         dynamicOpts.enable_chaffing = document.getElementById('edit-enable-chaffing').checked;
         dynamicOpts.enable_ech = document.getElementById('edit-enable-ech').checked;
         dynamicOpts.enable_multipath = document.getElementById('edit-enable-multipath').checked;
+        dynamicOpts.enable_bonding = document.getElementById('edit-enable-bonding').checked;
+        dynamicOpts.enable_ebpf = document.getElementById('edit-enable-ebpf').checked;
+        dynamicOpts.custom_sni = document.getElementById('edit-custom-sni').value || null;
+        dynamicOpts.mtu_size = parseInt(document.getElementById('edit-mtu-size').value || 1380);
 
         const expDate = document.getElementById('edit-expires-at').value;
         const expiresAtTs = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
