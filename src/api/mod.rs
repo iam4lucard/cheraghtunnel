@@ -511,15 +511,32 @@ async fn update_tunnel_handler(
     axum::extract::Path(id): axum::extract::Path<i64>,
     Json(payload): Json<Tunnel>,
 ) -> impl IntoResponse {
+    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
+    let was_active = if let Some(t) = &tunnel_opt { t.status == "active" } else { false };
+    
+    let mut final_tunnel = payload;
+    if let Some(ref existing) = tunnel_opt {
+        final_tunnel.status = existing.status.clone();
+        if final_tunnel.quota_used_bytes.unwrap_or(0) == 0 {
+            final_tunnel.quota_used_bytes = existing.quota_used_bytes;
+        }
+        if final_tunnel.iran_node_id.is_none() {
+            final_tunnel.iran_node_id = existing.iran_node_id;
+        }
+        if final_tunnel.kharej_node_id.is_none() {
+            final_tunnel.kharej_node_id = existing.kharej_node_id;
+        }
+    }
+
     match db::get_tunnels(&state.db_path) {
         Ok(tunnels) => {
             for t in tunnels {
                 if t.id != Some(id) {
-                    if t.iran_node_id == payload.iran_node_id {
-                        if t.iran_port == payload.iran_port {
+                    if t.iran_node_id == final_tunnel.iran_node_id && final_tunnel.iran_node_id.is_some() {
+                        if t.iran_port == final_tunnel.iran_port {
                             return (StatusCode::BAD_REQUEST, "Public port is already in use on this server").into_response();
                         }
-                        if t.control_port == payload.control_port {
+                        if t.control_port == final_tunnel.control_port {
                             return (StatusCode::BAD_REQUEST, "Control port is already in use on this server").into_response();
                         }
                     }
@@ -529,10 +546,7 @@ async fn update_tunnel_handler(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 
-    let tunnel_opt = db::get_tunnel_by_id(&state.db_path, id).unwrap_or(None);
-    let was_active = if let Some(t) = &tunnel_opt { t.status == "active" } else { false };
-    
-    match db::update_tunnel(&state.db_path, id, &payload) {
+    match db::update_tunnel(&state.db_path, id, &final_tunnel) {
         Ok(_) => {
             if was_active {
                 let state_clone = state.clone();

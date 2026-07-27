@@ -520,9 +520,11 @@ async function apiFetch(url, options = {}) {
 
 async function showEditModal(id) {
     try {
+        await loadNodes();
         const res = await apiFetch(`/api/tunnels/${id}`);
         if (!res || !res.ok) return;
         const t = await res.json();
+        window.editingTunnel = t;
         
         document.getElementById('edit-tunnel-id').value = t.id;
         document.getElementById('edit-tunnel-name').value = t.name;
@@ -636,12 +638,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const expDate = document.getElementById('edit-expires-at').value;
         const expiresAtTs = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
+        const existing = window.editingTunnel || {};
 
         const payload = {
             id: parseInt(id),
             name: document.getElementById('edit-tunnel-name').value,
-            iran_node_id: parseInt(document.getElementById('edit-tunnel-iran-select').value) || null,
-            kharej_node_id: parseInt(document.getElementById('edit-tunnel-kharej-select').value) || null,
+            iran_node_id: parseInt(document.getElementById('edit-tunnel-iran-select').value) || existing.iran_node_id || null,
+            kharej_node_id: parseInt(document.getElementById('edit-tunnel-kharej-select').value) || existing.kharej_node_id || null,
             protocol: document.getElementById('edit-tunnel-protocol').value,
             iran_port: parseInt(document.getElementById('edit-iran-port').value),
             control_port: parseInt(document.getElementById('edit-control-port').value),
@@ -654,15 +657,14 @@ document.addEventListener('DOMContentLoaded', () => {
             backup_ips: document.getElementById('edit-backup-ips').value || null,
             port_hopping: document.getElementById('edit-tunnel-hopping').checked ? 1 : 0,
             quota_limit_bytes: Math.round(parseFloat(document.getElementById('edit-quota-limit').value || 0) * 1024 * 1024 * 1024),
+            quota_used_bytes: existing.quota_used_bytes || 0,
             speed_limit_kbps: parseInt(document.getElementById('edit-speed-limit').value || 0),
             expires_at: expiresAtTs,
-            status: "inactive",
-            stats_rx: 0,
-            stats_tx: 0,
-            stats_speed_rx: 0,
-            stats_speed_tx: 0,
-            stats_speed_rx: 0,
-            stats_speed_tx: 0
+            status: existing.status || "inactive",
+            stats_rx: existing.stats_rx || 0,
+            stats_tx: existing.stats_tx || 0,
+            stats_speed_rx: existing.stats_speed_rx || 0,
+            stats_speed_tx: existing.stats_speed_tx || 0
         };
 
         try {
