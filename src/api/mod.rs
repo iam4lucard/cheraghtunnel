@@ -526,13 +526,16 @@ async fn update_tunnel_handler(
         if final_tunnel.kharej_node_id.is_none() {
             final_tunnel.kharej_node_id = existing.kharej_node_id;
         }
-    }
 
-    match db::get_tunnels(&state.db_path) {
-        Ok(tunnels) => {
-            for t in tunnels {
-                if t.id != Some(id) {
-                    if t.iran_node_id == final_tunnel.iran_node_id && final_tunnel.iran_node_id.is_some() {
+        // Only enforce port collision check if ports or Iran node actually changed
+        let port_changed = final_tunnel.iran_port != existing.iran_port 
+            || final_tunnel.control_port != existing.control_port 
+            || final_tunnel.iran_node_id != existing.iran_node_id;
+
+        if port_changed {
+            if let Ok(tunnels) = db::get_tunnels(&state.db_path) {
+                for t in tunnels {
+                    if t.id != Some(id) && t.iran_node_id == final_tunnel.iran_node_id && final_tunnel.iran_node_id.is_some() {
                         if t.iran_port == final_tunnel.iran_port {
                             return (StatusCode::BAD_REQUEST, "Public port is already in use on this server").into_response();
                         }
@@ -543,7 +546,6 @@ async fn update_tunnel_handler(
                 }
             }
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 
     match db::update_tunnel(&state.db_path, id, &final_tunnel) {

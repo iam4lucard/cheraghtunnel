@@ -602,25 +602,35 @@ document.addEventListener('DOMContentLoaded', () => {
     const editForm = document.getElementById('edit-tunnel-form');
 
     // Close edit modal
-    document.getElementById('close-edit-modal').addEventListener('click', () => {
-        editModal.style.display = 'none';
-    });
+    const closeEditBtn = document.getElementById('close-edit-modal');
+    if (closeEditBtn && editModal) {
+        closeEditBtn.addEventListener('click', () => {
+            editModal.style.display = 'none';
+        });
+    }
 
     const editProtoSelect = document.getElementById('edit-tunnel-protocol');
-    editProtoSelect.addEventListener('change', () => {
-        renderDynamicOptions(editProtoSelect.value, 'edit-dynamic-options-container');
-        if (window.toggleDecoyVisibility) {
-            window.toggleDecoyVisibility(editProtoSelect.value, 'edit-decoy-group');
-        }
-    });
+    if (editProtoSelect) {
+        editProtoSelect.addEventListener('change', () => {
+            renderDynamicOptions(editProtoSelect.value, 'edit-dynamic-options-container');
+            if (window.toggleDecoyVisibility) {
+                window.toggleDecoyVisibility(editProtoSelect.value, 'edit-decoy-group');
+            }
+        });
+    }
 
-    document.getElementById('gen-edit-token-btn').addEventListener('click', () => {
-        const randToken = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
-        document.getElementById('edit-tunnel-token').value = randToken;
-    });
+    const genEditTokenBtn = document.getElementById('edit-gen-token-btn') || document.getElementById('gen-edit-token-btn');
+    if (genEditTokenBtn) {
+        genEditTokenBtn.addEventListener('click', () => {
+            const randToken = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
+            const tokenInput = document.getElementById('edit-tunnel-token');
+            if (tokenInput) tokenInput.value = randToken;
+        });
+    }
 
     // Handle Edit Submit
-    editForm.addEventListener('submit', async (e) => {
+    if (editForm) {
+        editForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const id = document.getElementById('edit-tunnel-id').value;
         const dynamicOpts = JSON.parse(extractDynamicOptions('edit-dynamic-options-container') || '{}');
