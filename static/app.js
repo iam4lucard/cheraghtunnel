@@ -805,14 +805,16 @@ async function updateTelemetryChart(id) {
             return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         });
         const rttData = logs.map(l => l.rtt_ms >= 999 ? null : l.rtt_ms);
-        const lossData = logs.map(l => l.packet_loss);
+        const rxSpeedData = logs.map(l => Math.round((l.speed_rx || 0) / 1024));
+        const txSpeedData = logs.map(l => Math.round((l.speed_tx || 0) / 1024));
         
         const ctx = document.getElementById('telemetry-chart').getContext('2d');
         
         if (telemetryChartInstance) {
             telemetryChartInstance.data.labels = labels;
             telemetryChartInstance.data.datasets[0].data = rttData;
-            telemetryChartInstance.data.datasets[1].data = lossData;
+            telemetryChartInstance.data.datasets[1].data = rxSpeedData;
+            telemetryChartInstance.data.datasets[2].data = txSpeedData;
             telemetryChartInstance.update();
         } else {
             telemetryChartInstance = new Chart(ctx, {
@@ -823,17 +825,26 @@ async function updateTelemetryChart(id) {
                         {
                             label: 'RTT Latency (ms)',
                             data: rttData,
-                            borderColor: '#00f0ff',
-                            backgroundColor: 'rgba(0, 240, 255, 0.1)',
+                            borderColor: '#a855f7',
+                            backgroundColor: 'rgba(168, 85, 247, 0.1)',
                             borderWidth: 2,
                             tension: 0.3,
                             yAxisID: 'y'
                         },
                         {
-                            label: 'Packet Loss (%)',
-                            data: lossData,
-                            borderColor: '#ff3366',
-                            backgroundColor: 'rgba(255, 51, 102, 0.1)',
+                            label: 'Download Speed (KB/s)',
+                            data: rxSpeedData,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            yAxisID: 'y1'
+                        },
+                        {
+                            label: 'Upload Speed (KB/s)',
+                            data: txSpeedData,
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
                             borderWidth: 2,
                             tension: 0.3,
                             yAxisID: 'y1'
@@ -862,13 +873,12 @@ async function updateTelemetryChart(id) {
                             position: 'right',
                             title: {
                                 display: true,
-                                text: 'Loss (%)',
+                                text: 'Speed (KB/s)',
                                 color: '#fff'
                             },
                             ticks: { color: '#ccc' },
                             grid: { drawOnChartArea: false },
-                            min: 0,
-                            max: 100
+                            min: 0
                         },
                         x: {
                             ticks: { color: '#ccc' },

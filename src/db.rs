@@ -93,18 +93,22 @@ pub fn init_db(db_path: &Path) -> Result<()> {
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN last_probe_at INTEGER DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN e2e_latency_ms REAL DEFAULT 0.0", []);
 
-    // Create telemetry_logs table to store RTT/loss history
+    // Create telemetry_logs table to store RTT/loss and speed history
     conn.execute(
         "CREATE TABLE IF NOT EXISTS telemetry_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tunnel_id INTEGER NOT NULL,
             rtt_ms REAL NOT NULL,
             packet_loss REAL NOT NULL,
+            speed_rx INTEGER DEFAULT 0,
+            speed_tx INTEGER DEFAULT 0,
             timestamp INTEGER DEFAULT (strftime('%s', 'now')),
             FOREIGN KEY(tunnel_id) REFERENCES tunnels(id) ON DELETE CASCADE
         )",
         [],
     )?;
+    let _ = conn.execute("ALTER TABLE telemetry_logs ADD COLUMN speed_rx INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE telemetry_logs ADD COLUMN speed_tx INTEGER DEFAULT 0", []);
 
     // Create settings table
     conn.execute(
@@ -417,15 +421,23 @@ pub fn verify_password(input: &str, stored: &str) -> bool {
 }
 
 // -------------------------------------------------------------
-// Telemetry Database Functions
-// -------------------------------------------------------------
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TelemetryRecord {
+    pub rtt_ms: f64,
+    pub packet_loss: f64,
+    pub speed_rx: u64,
+    pub speed_tx: u64,
+    pub timestamp: i64,
+}
 
-pub fn log_telemetry(db_path: &Path, tunnel_id: i64, rtt_ms: f64, packet_loss: f64) -> Result<()> {
+pub fn log_telemetry(db_path: &Path, tunnel_id: i64, rtt_ms: f64, packet_loss: f64, speed_rx: u64, speed_tx: u64) -> Result<()> {
     let conn = get_db_conn(db_path)?;
     conn.execute(
-        "INSERT INTO telemetry_logs (tunnel_id, rtt_ms, packet_loss) VALUES (?1, ?2, ?3)",
-        params![tunnel_id, rtt_ms, packet_loss],
+        "INSERT INTO telemetry_logs (tunnel_id, rtt_ms, packet_loss, speed_rx, speed_tx) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![tunnel_id, rtt_ms, packet_loss, speed_rx as i64, speed_tx as i64],
     )?;
+    // Periodically prune logs older than 24 hours (86,400s)
+    let _ = conn.execute("DELETE FROM telemetry_logs WHERE timestamp < strftime('%s', 'now') - 86400", []);
     Ok(())
 }
 
@@ -436,6 +448,29 @@ pub fn get_recent_telemetry(db_path: &Path, tunnel_id: i64, limit: usize) -> Res
     )?;
     let iter = stmt.query_map(params![tunnel_id, limit as i64], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+
+    let mut list = Vec::new();
+    for item in iter {
+        list.push(item?);
+    }
+    list.reverse();
+    Ok(list)
+}
+
+pub fn get_recent_telemetry_history(db_path: &Path, tunnel_id: i64, limit: usize) -> Result<Vec<TelemetryRecord>> {
+    let conn = get_db_conn(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT rtt_ms, packet_loss, COALESCE(speed_rx, 0), COALESCE(speed_tx, 0), timestamp FROM telemetry_logs WHERE tunnel_id = ?1 ORDER BY id DESC LIMIT ?2"
+    )?;
+    let iter = stmt.query_map(params![tunnel_id, limit as i64], |row| {
+        Ok(TelemetryRecord {
+            rtt_ms: row.get(0)?,
+            packet_loss: row.get(1)?,
+            speed_rx: row.get::<_, i64>(2)? as u64,
+            speed_tx: row.get::<_, i64>(3)? as u64,
+            timestamp: row.get(4)?,
+        })
     })?;
 
     let mut list = Vec::new();

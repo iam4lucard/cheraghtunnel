@@ -538,6 +538,32 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.14.11"></script>
+    <!-- Telemetry Analytics Modal -->
+    <div id="telemetry-chart-modal" class="modal-overlay" style="display: none;">
+        <div class="glass-card modal-card" style="max-width: 800px; width: 90%;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 id="telemetry-chart-title">Tunnel Telemetry & Live Performance</h3>
+                <button type="button" id="close-telemetry-chart-modal-x" class="btn btn-secondary" style="padding: 4px 12px;">✕</button>
+            </div>
+            <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+                <div class="stat-box" style="flex: 1; padding: 10px 15px; background: rgba(0,0,0,0.3); border-radius: 8px;">
+                    <span style="font-size: 0.8em; color: #aaa;">CURRENT SPEED (RX / TX)</span>
+                    <div id="telemetry-modal-speed" style="font-weight: bold; color: #3b82f6; font-size: 1.1em; margin-top: 4px;">↓ 0 KB/s / ↑ 0 KB/s</div>
+                </div>
+                <div class="stat-box" style="flex: 1; padding: 10px 15px; background: rgba(0,0,0,0.3); border-radius: 8px;">
+                    <span style="font-size: 0.8em; color: #aaa;">ROUND TRIP LATENCY</span>
+                    <div id="telemetry-modal-ping" style="font-weight: bold; color: #a855f7; font-size: 1.1em; margin-top: 4px;">⚡ 0 ms</div>
+                </div>
+            </div>
+            <div style="position: relative; height: 320px; width: 100%; background: rgba(0,0,0,0.25); border-radius: 12px; padding: 15px;">
+                <canvas id="telemetryChartCanvas"></canvas>
+            </div>
+            <div class="modal-actions" style="margin-top: 15px;">
+                <button type="button" id="close-telemetry-chart-modal-btn" class="btn btn-primary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js?v=1.19.0"></script>
 </body>
 </html>

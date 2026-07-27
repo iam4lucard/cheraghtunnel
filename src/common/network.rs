@@ -18,6 +18,9 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
     let _ = socket.set_tcp_keepalive(&keepalive);
     
 
+    // 3. Set large 2MB receive & send buffer sizes for zero-copy-like high-throughput TCP windowing
+    let _ = socket.set_recv_buffer_size(2 * 1024 * 1024);
+    let _ = socket.set_send_buffer_size(2 * 1024 * 1024);
     
     // 4. Set IP Type of Service (TOS) to Low Delay to prioritize packets on routers
     let _ = socket.set_tos(0x10); // IPTOS_LOWDELAY

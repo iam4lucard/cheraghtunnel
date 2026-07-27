@@ -177,14 +177,17 @@ async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
                             .build()
                             .unwrap_or_default();
 
+                        let mut cur_rx = 0u64;
+                        let mut cur_tx = 0u64;
+
                         if let Ok(resp) = client.get(&url).send().await {
                             if let Ok(json) = resp.json::<serde_json::Value>().await {
                                 let rx_delta = json["rx_delta"].as_u64().unwrap_or(0);
                                 let tx_delta = json["tx_delta"].as_u64().unwrap_or(0);
-                                let speed_rx = json["speed_rx"].as_u64().unwrap_or(0);
-                                let speed_tx = json["speed_tx"].as_u64().unwrap_or(0);
+                                cur_rx = json["speed_rx"].as_u64().unwrap_or(0);
+                                cur_tx = json["speed_tx"].as_u64().unwrap_or(0);
                                 
-                                let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, speed_rx, speed_tx);
+                                let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, cur_rx, cur_tx);
                             }
                         }
 
@@ -199,10 +202,10 @@ async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
                         };
 
                         if let Some(rtt) = node_ping {
-                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt, 0.0);
+                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt, 0.0, cur_rx, cur_tx);
                             let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "active", rtt);
                         } else {
-                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), 999.0, 100.0);
+                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), 999.0, 100.0, 0, 0);
                             let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
                         }
                     }
@@ -418,20 +421,9 @@ async fn telemetry_handler(
     Extension(state): Extension<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
-    match db::get_recent_telemetry(&state.db_path, id, 100) {
-        Ok(logs) => {
-            let list: Vec<serde_json::Value> = logs.into_iter().map(|(rtt, loss, ts)| {
-                serde_json::json!({
-                    "rtt_ms": rtt,
-                    "packet_loss": loss,
-                    "timestamp": ts
-                })
-            }).collect();
-            (StatusCode::OK, Json(list)).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()
-        }
+    match db::get_recent_telemetry_history(&state.db_path, id, 100) {
+        Ok(logs) => (StatusCode::OK, Json(logs)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response(),
     }
 }
 
