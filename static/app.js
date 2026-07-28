@@ -1,1003 +1,676 @@
+/* ==========================================================================
+   CheraghTunnel Pro - Monolithic Frontend Engine v1.22
+   UI/UX Pro Max Architecture with Global Event Delegation & Fail-Safe Modals
+   ========================================================================== */
+
 const DECOY_PROTOCOLS = ['aura', 'nova', 'glimmer', 'beacon', 'mirage', 'spectre'];
+let telemetryChartInstance = null;
+let statsInterval = null;
+
+// Auth Session Management
+function getSessionToken() {
+    return localStorage.getItem('cheragh_session');
+}
+
+function setSessionToken(token) {
+    localStorage.setItem('cheragh_session', token);
+}
+
+function clearSessionToken() {
+    localStorage.removeItem('cheragh_session');
+}
 
 async function handleLogin(e) {
     if (e) e.preventDefault();
     const uInput = document.getElementById('username');
     const pInput = document.getElementById('password');
-    const username = uInput ? uInput.value : '';
-    const password = pInput ? pInput.value : '';
-    
+    const errText = document.getElementById('login-error');
+
+    if (!uInput || !pInput) return;
+    errText.style.display = 'none';
+
     try {
         const res = await fetch('/api/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password })
+            body: JSON.stringify({
+                username: uInput.value.trim(),
+                password: pInput.value
+            })
         });
-        const data = await res.json();
-        console.log('Login response:', data);
-        if (data.success) {
-            localStorage.setItem('cheragh_session', data.token);
+
+        if (res.ok) {
+            const data = await res.json();
+            setSessionToken(data.token);
             showDashboard();
         } else {
-            showLoginError(data.message || "Invalid username or password");
+            errText.innerText = "Invalid credentials. Please try again.";
+            errText.style.display = 'block';
         }
     } catch (err) {
-        console.error("Login catch error:", err);
-        showLoginError("Error connecting to server");
+        console.error("Login request failed:", err);
+        errText.innerText = "Connection failed. Please check server status.";
+        errText.style.display = 'block';
     }
     return false;
 }
-window.handleLogin = handleLogin;
 
-function initApp() {
-    // Session Auth State check
-    const token = localStorage.getItem('cheragh_session');
-    if (token) {
-        showDashboard();
+function handleLogout() {
+    clearSessionToken();
+    if (statsInterval) clearInterval(statsInterval);
+    document.getElementById('dashboard-container').style.display = 'none';
+    document.getElementById('login-container').style.display = 'flex';
+}
+
+// Dashboard Initializer
+async function showDashboard() {
+    document.getElementById('login-container').style.display = 'none';
+    document.getElementById('dashboard-container').style.display = 'block';
+
+    await loadNodes();
+    await loadTunnels();
+    startStatsPolling();
+}
+
+// Modal Controllers
+function openModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) modal.style.display = 'flex';
+}
+
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) modal.style.display = 'none';
+}
+
+function openCreateModal() {
+    generateToken('tunnel-token');
+    openModal('create-modal');
+}
+
+function openNodesModal() {
+    loadNodes();
+    openModal('nodes-modal');
+}
+
+function openBackupModal() {
+    openModal('backup-modal');
+}
+
+function openAddNodeModal() {
+    openModal('add-node-modal');
+}
+
+function generateToken(targetFieldId) {
+    const token = Math.random().toString(36).substring(2, 12).toUpperCase();
+    const field = document.getElementById(targetFieldId);
+    if (field) field.value = token;
+}
+
+// Protocol Dynamic Options Visual Logic
+function toggleDecoyGroup(protocol, groupId) {
+    const group = document.getElementById(groupId);
+    if (group) {
+        group.style.display = DECOY_PROTOCOLS.includes(protocol) ? 'block' : 'none';
+    }
+}
+
+// Data Fetchers & Renderers
+async function loadNodes() {
+    const token = getSessionToken();
+    if (!token) return;
+
+    try {
+        const res = await fetch('/api/nodes', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const nodes = await res.json();
+
+        // Populate Nodes Table
+        const tbody = document.getElementById('nodes-body');
+        if (tbody) {
+            tbody.innerHTML = nodes.map(n => `
+                <tr>
+                    <td><strong>${escapeHtml(n.name)}</strong></td>
+                    <td class="mono">${escapeHtml(n.host)}</td>
+                    <td class="mono">${n.port}</td>
+                    <td class="mono">${escapeHtml(n.username)}</td>
+                    <td>
+                        <button type="button" class="action-btn delete" data-action="delete-node" data-id="${n.id}">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // Populate Dropdowns
+        const iranSelects = [document.getElementById('tunnel-iran-select'), document.getElementById('edit-tunnel-iran-select')];
+        const kharejSelects = [document.getElementById('tunnel-kharej-select'), document.getElementById('edit-tunnel-kharej-select')];
+
+        const iranOptions = nodes.filter(n => n.role === 'iran' || n.role === 'both')
+            .map(n => `<option value="${n.id}">${escapeHtml(n.name)} (${escapeHtml(n.host)})</option>`).join('');
+        const kharejOptions = nodes.filter(n => n.role === 'kharej' || n.role === 'both')
+            .map(n => `<option value="${n.id}">${escapeHtml(n.name)} (${escapeHtml(n.host)})</option>`).join('');
+
+        iranSelects.forEach(s => { if (s) s.innerHTML = iranOptions || '<option value="">No Iran Nodes</option>'; });
+        kharejSelects.forEach(s => { if (s) s.innerHTML = kharejOptions || '<option value="">No Kharej Nodes</option>'; });
+    } catch (err) {
+        console.error("Error loading nodes:", err);
+    }
+}
+
+async function loadTunnels() {
+    const token = getSessionToken();
+    if (!token) return;
+
+    try {
+        const res = await fetch('/api/status', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.status === 401) {
+            handleLogout();
+            return;
+        }
+        if (!res.ok) return;
+
+        const data = await res.json();
+        
+        // System stats update
+        if (data.cpu_usage !== undefined) {
+            document.getElementById('cpu-text').innerText = `${Math.round(data.cpu_usage)}%`;
+            document.getElementById('cpu-circle').setAttribute('stroke-dasharray', `${Math.round(data.cpu_usage)}, 100`);
+        }
+        if (data.ram_usage !== undefined) {
+            document.getElementById('ram-text').innerText = `${Math.round(data.ram_usage)}%`;
+            document.getElementById('ram-circle').setAttribute('stroke-dasharray', `${Math.round(data.ram_usage)}, 100`);
+        }
+
+        const tunnels = data.tunnels || [];
+        const activeCount = tunnels.filter(t => t.status === 'active' || t.status === 'running').length;
+        document.getElementById('active-count').innerText = `${activeCount} / ${tunnels.length}`;
+
+        const tbody = document.getElementById('tunnels-body');
+        if (!tbody) return;
+
+        tbody.innerHTML = tunnels.map(t => {
+            const isRunning = t.status === 'active' || t.status === 'running';
+            const isPaused = t.status === 'paused';
+            const badgeClass = isRunning ? 'active' : (isPaused ? 'paused' : 'stopped');
+            const badgeText = isRunning ? 'Active' : (isPaused ? 'Paused' : 'Stopped');
+            
+            const rxSpeed = formatBytes(t.rx_speed || 0);
+            const txSpeed = formatBytes(t.tx_speed || 0);
+            const pingText = t.rtt_ms !== undefined && t.rtt_ms > 0 ? `${t.rtt_ms} ms` : '—';
+
+            return `
+                <tr>
+                    <td><strong>${escapeHtml(t.name)}</strong></td>
+                    <td><span class="mono">${escapeHtml(t.protocol.toUpperCase())}</span></td>
+                    <td class="mono">${t.iran_port}</td>
+                    <td class="mono">${t.control_port}</td>
+                    <td class="mono">${t.kharej_port}</td>
+                    <td>
+                        <span class="status-badge ${badgeClass}">
+                            <span class="status-dot"></span>${badgeText}
+                        </span>
+                    </td>
+                    <td class="mono">${pingText}</td>
+                    <td class="mono">↓ ${rxSpeed}/s <br> ↑ ${txSpeed}/s</td>
+                    <td>
+                        <div class="action-buttons">
+                            <button type="button" class="action-btn" data-action="toggle-tunnel" data-id="${t.id}">
+                                ${isRunning ? '⏸ Pause' : '▶ Start'}
+                            </button>
+                            <button type="button" class="action-btn" data-action="edit-tunnel" data-id="${t.id}">✏️ Edit</button>
+                            <button type="button" class="action-btn" data-action="show-telemetry" data-id="${t.id}">📈 Chart</button>
+                            <button type="button" class="action-btn delete" data-action="delete-tunnel" data-id="${t.id}">🗑️</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        console.error("Error loading tunnels:", err);
+    }
+}
+
+function startStatsPolling() {
+    if (statsInterval) clearInterval(statsInterval);
+    statsInterval = setInterval(loadTunnels, 3000);
+}
+
+// Tunnel Operations
+async function toggleTunnel(id) {
+    const token = getSessionToken();
+    try {
+        await fetch(`/api/tunnels/${id}/toggle`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        loadTunnels();
+    } catch (err) {
+        console.error("Error toggling tunnel:", err);
+    }
+}
+
+async function deleteTunnel(id) {
+    if (!confirm("Are you sure you want to delete this tunnel?")) return;
+    const token = getSessionToken();
+    try {
+        await fetch(`/api/tunnels/${id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        loadTunnels();
+    } catch (err) {
+        console.error("Error deleting tunnel:", err);
+    }
+}
+
+async function deleteNode(id) {
+    if (!confirm("Are you sure you want to delete this remote node?")) return;
+    const token = getSessionToken();
+    try {
+        await fetch(`/api/nodes/${id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        loadNodes();
+    } catch (err) {
+        console.error("Error deleting node:", err);
+    }
+}
+
+async function showEditModal(id) {
+    const token = getSessionToken();
+    try {
+        const res = await fetch(`/api/tunnels/${id}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const t = await res.json();
+
+        document.getElementById('edit-tunnel-id').value = t.id;
+        document.getElementById('edit-tunnel-name').value = t.name;
+        document.getElementById('edit-tunnel-protocol').value = t.protocol;
+        document.getElementById('edit-tunnel-iran-select').value = t.iran_node_id;
+        document.getElementById('edit-tunnel-kharej-select').value = t.kharej_node_id;
+        document.getElementById('edit-iran-port').value = t.iran_port;
+        document.getElementById('edit-control-port').value = t.control_port;
+        document.getElementById('edit-kharej-port').value = t.kharej_port;
+        document.getElementById('edit-tunnel-token').value = t.auth_token;
+
+        toggleDecoyGroup(t.protocol, 'edit-decoy-group');
+        openModal('edit-modal');
+    } catch (err) {
+        console.error("Error fetching tunnel for edit:", err);
+    }
+}
+
+async function showTelemetry(id) {
+    const token = getSessionToken();
+    try {
+        const res = await fetch(`/api/telemetry?tunnel_id=${id}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        openModal('telemetry-chart-modal');
+        renderTelemetryChart(data);
+    } catch (err) {
+        console.error("Error loading telemetry:", err);
+    }
+}
+
+function renderTelemetryChart(data) {
+    const canvas = document.getElementById('telemetryChartCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    if (telemetryChartInstance) {
+        telemetryChartInstance.destroy();
     }
 
-    // Login Form Submit
-    const loginForm = document.getElementById('login-form');
-    if (loginForm) {
-        loginForm.addEventListener('submit', handleLogin);
-    }
+    const labels = data.map(d => new Date(d.timestamp * 1000).toLocaleTimeString());
+    const rttData = data.map(d => d.rtt_ms);
 
-    // Logout
-    document.getElementById('logout-btn').addEventListener('click', () => {
-        localStorage.removeItem('cheragh_session');
-        window.location.reload();
-    });
-
-    // Create Modal Opens/Closes
-    const openCreateBtn = document.getElementById('open-create-modal');
-    const closeCreateBtn = document.getElementById('close-create-modal');
-    const createModal = document.getElementById('create-modal');
-    
-    openCreateBtn.addEventListener('click', () => {
-        // Preset random token
-        document.getElementById('tunnel-token').value = Math.random().toString(36).substring(2, 12).toUpperCase();
-        createModal.style.display = 'flex';
-    });
-    
-    closeCreateBtn.addEventListener('click', () => {
-        createModal.style.display = 'none';
-    });
-
-    // Generate token button
-    document.getElementById('gen-token-btn').addEventListener('click', () => {
-        document.getElementById('tunnel-token').value = Math.random().toString(36).substring(2, 12).toUpperCase();
-    });
-
-    // Show/Hide dynamic options based on protocol
-
-    
-    function toggleDecoyVisibility(protocol, groupId) {
-        const group = document.getElementById(groupId);
-        if (group) {
-            if (DECOY_PROTOCOLS.includes(protocol)) {
-                group.style.display = 'block';
-            } else {
-                group.style.display = 'none';
+    telemetryChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'RTT Latency (ms)',
+                data: rttData,
+                borderColor: '#8b5cf6',
+                backgroundColor: 'rgba(139, 92, 246, 0.15)',
+                borderWidth: 2,
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#f8fafc' } } },
+            scales: {
+                x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(51, 65, 85, 0.3)' } },
+                y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(51, 65, 85, 0.3)' } }
             }
         }
-    }
-    window.toggleDecoyVisibility = toggleDecoyVisibility; // Expose globally for showEditModal
-
-    const protoSelect = document.getElementById('tunnel-protocol');
-    protoSelect.addEventListener('change', () => {
-        renderDynamicOptions(protoSelect.value, 'dynamic-options-container');
-        toggleDecoyVisibility(protoSelect.value, 'decoy-group');
     });
-    // Trigger initial render
-    renderDynamicOptions(protoSelect.value, 'dynamic-options-container');
-    toggleDecoyVisibility(protoSelect.value, 'decoy-group');
+}
 
-    // Create Form Submit
-    const createForm = document.getElementById('create-tunnel-form');
-    createForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const dynamicOpts = JSON.parse(extractDynamicOptions('dynamic-options-container') || '{}');
-        dynamicOpts.fragment_sni = document.getElementById('fragment-sni').checked;
-        dynamicOpts.fragment_size = parseInt(document.getElementById('fragment-size').value || 5);
-        dynamicOpts.randomize_ua = document.getElementById('randomize-ua').checked;
-        dynamicOpts.enable_padding = document.getElementById('enable-padding').checked;
-        dynamicOpts.enable_chaffing = document.getElementById('enable-chaffing').checked;
-        dynamicOpts.enable_ech = document.getElementById('enable-ech').checked;
-        dynamicOpts.enable_multipath = document.getElementById('enable-multipath').checked;
-        dynamicOpts.enable_jitter = document.getElementById('enable-jitter').checked;
-        dynamicOpts.jitter_ms = parseInt(document.getElementById('jitter-ms').value || 10);
-        dynamicOpts.enable_adaptive_fec = document.getElementById('enable-adaptive-fec').checked;
-        dynamicOpts.enable_fallback = document.getElementById('enable-fallback').checked;
+// Backup Download
+function downloadBackup() {
+    const token = getSessionToken();
+    if (!token) return;
+    window.location.href = `/api/backup?token=${encodeURIComponent(token)}`;
+}
 
-        const rawDecoy = document.getElementById('decoy-url').value;
-        if (rawDecoy && rawDecoy.includes(',')) {
-            dynamicOpts.decoy_pool = rawDecoy.split(',').map(s => s.trim()).filter(Boolean);
-        }
+// GLOBAL EVENT DELEGATION (Catches 100% of Clicks)
+document.addEventListener('click', (e) => {
+    const target = e.target.closest('[data-action]');
+    if (!target) return;
 
-        const expDate = document.getElementById('expires-at').value;
-        const expiresAtTs = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
+    const action = target.getAttribute('data-action');
+    const id = target.getAttribute('data-id');
+    const modalTarget = target.getAttribute('data-target');
+    const fieldTarget = target.getAttribute('data-field');
 
-        const payload = {
-            name: document.getElementById('tunnel-name').value,
-            iran_node_id: parseInt(document.getElementById('tunnel-iran-select').value) || null,
-            kharej_node_id: parseInt(document.getElementById('tunnel-kharej-select').value) || null,
+    switch (action) {
+        case 'open-create-modal':
+            openCreateModal();
+            break;
+        case 'open-nodes-modal':
+            openNodesModal();
+            break;
+        case 'open-backup-modal':
+            openBackupModal();
+            break;
+        case 'open-add-node-modal':
+            openAddNodeModal();
+            break;
+        case 'close-modal':
+            if (modalTarget) closeModal(modalTarget);
+            break;
+        case 'generate-token':
+            if (fieldTarget) generateToken(fieldTarget);
+            break;
+        case 'toggle-tunnel':
+            if (id) toggleTunnel(id);
+            break;
+        case 'edit-tunnel':
+            if (id) showEditModal(id);
+            break;
+        case 'delete-tunnel':
+            if (id) deleteTunnel(id);
+            break;
+        case 'delete-node':
+            if (id) deleteNode(id);
+            break;
+        case 'show-telemetry':
+            if (id) showTelemetry(id);
+            break;
+        case 'download-backup':
+            downloadBackup();
+            break;
+        case 'logout':
+            handleLogout();
+            break;
+        case 'toggle-accordion':
+            const accordionContent = target.nextElementSibling;
+            if (accordionContent) {
+                const isHidden = accordionContent.style.display === 'none';
+                accordionContent.style.display = isHidden ? 'block' : 'none';
+                const arrow = target.querySelector('.accordion-arrow');
+                if (arrow) arrow.innerText = isHidden ? '▲' : '▼';
+            }
+            break;
+    }
+});
+
+// FORM SUBMISSIONS ENGINE
+document.addEventListener('submit', async (e) => {
+    const form = e.target;
+    if (!form || !form.id) return;
+
+    const token = getSessionToken();
+
+    if (form.id === 'login-form') {
+        handleLogin(e);
+        return;
+    }
+
+    e.preventDefault();
+
+    if (form.id === 'create-tunnel-form') {
+        const body = {
+            name: document.getElementById('tunnel-name').value.trim(),
             protocol: document.getElementById('tunnel-protocol').value,
+            iran_node_id: parseInt(document.getElementById('tunnel-iran-select').value),
+            kharej_node_id: parseInt(document.getElementById('tunnel-kharej-select').value),
             iran_port: parseInt(document.getElementById('iran-port').value),
             control_port: parseInt(document.getElementById('control-port').value),
             kharej_port: parseInt(document.getElementById('kharej-port').value),
-            token: document.getElementById('tunnel-token').value,
-            decoy_url: DECOY_PROTOCOLS.includes(document.getElementById('tunnel-protocol').value)
-                ? document.getElementById('decoy-url').value || "google.com"
-                : null,
-            transport_options: JSON.stringify(dynamicOpts),
-            backup_ips: document.getElementById('backup-ips').value || null,
-            port_hopping: document.getElementById('tunnel-hopping').checked ? 1 : 0,
-            quota_limit_bytes: Math.round(parseFloat(document.getElementById('quota-limit').value || 0) * 1024 * 1024 * 1024),
-            speed_limit_kbps: parseInt(document.getElementById('speed-limit').value || 0),
-            expires_at: expiresAtTs,
-            status: "inactive",
-            stats_rx: 0,
-            stats_tx: 0,
-            stats_speed_rx: 0,
-            stats_speed_tx: 0
+            auth_token: document.getElementById('tunnel-token').value.trim(),
+            options: JSON.stringify({
+                decoy_domain: document.getElementById('decoy-url').value.trim(),
+                quota_gb: parseFloat(document.getElementById('quota-limit').value || '0'),
+                speed_kbs: parseInt(document.getElementById('speed-limit').value || '0'),
+                expires_at: document.getElementById('expires-at').value,
+                backup_ips: document.getElementById('backup-ips').value.trim(),
+                fragment_sni: document.getElementById('fragment-sni').checked,
+                fragment_size: parseInt(document.getElementById('fragment-size').value || '5'),
+                randomize_ua: document.getElementById('randomize-ua').checked,
+                tunnel_hopping: document.getElementById('tunnel-hopping').checked,
+                enable_padding: document.getElementById('enable-padding').checked,
+                enable_chaffing: document.getElementById('enable-chaffing').checked,
+                enable_ech: document.getElementById('enable-ech').checked,
+                enable_multipath: document.getElementById('enable-multipath').checked,
+                enable_jitter: document.getElementById('enable-jitter').checked,
+                jitter_ms: parseInt(document.getElementById('jitter-ms').value || '10'),
+                enable_adaptive_fec: document.getElementById('enable-adaptive-fec').checked,
+                enable_fallback: document.getElementById('enable-fallback').checked
+            })
         };
 
         try {
-            const res = await apiFetch('/api/tunnels', {
+            const res = await fetch('/api/tunnels', {
                 method: 'POST',
-                body: JSON.stringify(payload)
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(body)
             });
-            if (res && res.ok) {
-                createModal.style.display = 'none';
-                createForm.reset();
+            if (res.ok) {
+                closeModal('create-modal');
+                form.reset();
                 loadTunnels();
-            } else if (res) {
-                const errMsg = await res.text();
-                alert(errMsg || "Failed to create tunnel config");
+            } else {
+                alert("Failed to create tunnel. Check input parameters.");
             }
         } catch (err) {
-            console.error(err);
+            console.error("Create tunnel failed:", err);
         }
-    });
+    }
 
-
-    document.getElementById('open-add-node-modal').addEventListener('click', () => {
-        document.getElementById('add-node-modal').style.display = 'flex';
-    });
-    document.getElementById('close-add-node-modal').addEventListener('click', () => {
-        document.getElementById('add-node-modal').style.display = 'none';
-    });
-    
-    document.getElementById('add-node-form').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const payload = {
-            name: document.getElementById('add-node-name').value,
-            role: document.getElementById('add-node-role').value,
-            host: document.getElementById('add-node-host').value,
-            port: parseInt(document.getElementById('add-node-port').value),
-            username: document.getElementById('add-node-user').value,
-            password: document.getElementById('add-node-pass').value || null,
-            private_key: document.getElementById('add-node-key').value || null
+    if (form.id === 'edit-tunnel-form') {
+        const id = document.getElementById('edit-tunnel-id').value;
+        const body = {
+            name: document.getElementById('edit-tunnel-name').value.trim(),
+            protocol: document.getElementById('edit-tunnel-protocol').value,
+            iran_node_id: parseInt(document.getElementById('edit-tunnel-iran-select').value),
+            kharej_node_id: parseInt(document.getElementById('edit-tunnel-kharej-select').value),
+            iran_port: parseInt(document.getElementById('edit-iran-port').value),
+            control_port: parseInt(document.getElementById('edit-control-port').value),
+            kharej_port: parseInt(document.getElementById('edit-kharej-port').value),
+            auth_token: document.getElementById('edit-tunnel-token').value.trim(),
+            options: JSON.stringify({
+                decoy_domain: document.getElementById('edit-decoy-url').value.trim(),
+                quota_gb: parseFloat(document.getElementById('edit-quota-limit').value || '0'),
+                speed_kbs: parseInt(document.getElementById('edit-speed-limit').value || '0'),
+                expires_at: document.getElementById('edit-expires-at').value,
+                backup_ips: document.getElementById('edit-backup-ips').value.trim(),
+                fragment_sni: document.getElementById('edit-fragment-sni').checked,
+                fragment_size: parseInt(document.getElementById('edit-fragment-size').value || '5'),
+                randomize_ua: document.getElementById('edit-randomize-ua').checked,
+                tunnel_hopping: document.getElementById('edit-tunnel-hopping').checked,
+                enable_padding: document.getElementById('edit-enable-padding').checked,
+                enable_chaffing: document.getElementById('edit-enable-chaffing').checked,
+                enable_ech: document.getElementById('edit-enable-ech').checked,
+                enable_multipath: document.getElementById('edit-enable-multipath').checked,
+                enable_bonding: document.getElementById('edit-enable-bonding').checked,
+                enable_ebpf: document.getElementById('edit-enable-ebpf').checked,
+                custom_sni: document.getElementById('edit-custom-sni').value.trim(),
+                mtu_size: parseInt(document.getElementById('edit-mtu-size').value || '1380')
+            })
         };
+
         try {
-            const res = await apiFetch('/api/nodes', { method: 'POST', body: JSON.stringify(payload) });
-            if (res && res.ok) {
-                document.getElementById('add-node-modal').style.display = 'none';
-                document.getElementById('add-node-form').reset();
+            const res = await fetch(`/api/tunnels/${id}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(body)
+            });
+            if (res.ok) {
+                closeModal('edit-modal');
+                loadTunnels();
+            } else {
+                alert("Failed to update tunnel.");
+            }
+        } catch (err) {
+            console.error("Edit tunnel failed:", err);
+        }
+    }
+
+    if (form.id === 'add-node-form') {
+        const body = {
+            name: document.getElementById('add-node-name').value.trim(),
+            role: document.getElementById('add-node-role').value,
+            host: document.getElementById('add-node-host').value.trim(),
+            port: parseInt(document.getElementById('add-node-port').value || '22'),
+            username: document.getElementById('add-node-user').value.trim(),
+            password: document.getElementById('add-node-pass').value || null,
+            ssh_key: document.getElementById('add-node-key').value.trim() || null
+        };
+
+        try {
+            const res = await fetch('/api/nodes', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(body)
+            });
+            if (res.ok) {
+                closeModal('add-node-modal');
+                form.reset();
                 loadNodes();
             } else {
-                alert("Failed to add node.");
+                alert("Failed to save remote node.");
             }
-        } catch(err) { console.error(err); }
-    });
-    // Backup & Restore Logic
-    document.getElementById('open-backup-modal-btn').addEventListener('click', () => {
-        document.getElementById('backup-modal').style.display = 'flex';
-    });
-    
-    document.getElementById('close-backup-modal').addEventListener('click', () => {
-        document.getElementById('backup-modal').style.display = 'none';
-    });
-
-    document.getElementById('download-backup-btn').addEventListener('click', () => {
-        const token = localStorage.getItem('cheragh_session');
-        if (!token) {
-            alert("Session token not found. Please log in again.");
-            return;
+        } catch (err) {
+            console.error("Add node failed:", err);
         }
-        window.location.href = `/api/backup?token=${encodeURIComponent(token)}`;
-    });
+    }
 
-    document.getElementById('restore-form').addEventListener('submit', async (e) => {
-        e.preventDefault();
+    if (form.id === 'restore-form') {
         const fileInput = document.getElementById('restore-file');
         if (!fileInput.files.length) return;
-        
-        const file = fileInput.files[0];
-        const formData = new FormData();
-        formData.append('file', file);
-        
-        const btn = document.getElementById('restore-submit-btn');
-        btn.innerText = "Restoring...";
-        btn.disabled = true;
 
-        const token = localStorage.getItem('cheragh_session');
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+
+        const submitBtn = document.getElementById('restore-submit-btn');
+        submitBtn.innerText = "Restoring...";
+        submitBtn.disabled = true;
+
         try {
             const res = await fetch('/api/restore', {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
                 body: formData
             });
-            
+
             if (res.ok) {
                 alert("Database restored successfully! Reloading panel...");
                 window.location.reload();
             } else {
-                const errText = await res.text();
-                alert("Restore failed: " + errText);
-                btn.innerText = "Upload and Restore";
-                btn.disabled = false;
+                alert("Restore failed: " + (await res.text()));
+                submitBtn.innerText = "Upload and Restore";
+                submitBtn.disabled = false;
             }
         } catch (err) {
-            console.error(err);
+            console.error("Restore failed:", err);
             alert("An error occurred during restore.");
-            btn.innerText = "Upload and Restore";
-            btn.disabled = false;
+            submitBtn.innerText = "Upload and Restore";
+            submitBtn.disabled = false;
         }
-    });
-
-    
-
-
-    // Nodes Modal
-    document.getElementById('manage-nodes-btn').addEventListener('click', () => {
-        loadNodes();
-        document.getElementById('nodes-modal').style.display = 'flex';
-    });
-    
-    document.getElementById('close-nodes-modal').addEventListener('click', () => {
-        document.getElementById('nodes-modal').style.display = 'none';
-    });
-
-let wsInstance = null;
-
-function initWebSocketTelemetry() {
-    if (wsInstance) return;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws/telemetry`;
-    wsInstance = new WebSocket(wsUrl);
-
-    wsInstance.onmessage = (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'telemetry_update') {
-                if (data.cpu_usage !== undefined) {
-                    document.getElementById('cpu-text').innerText = `${Math.round(data.cpu_usage)}%`;
-                    document.getElementById('cpu-circle').setAttribute('stroke-dasharray', `${data.cpu_usage}, 100`);
-                }
-                if (data.mem_usage !== undefined) {
-                    document.getElementById('ram-text').innerText = `${Math.round(data.mem_usage)}%`;
-                    document.getElementById('ram-circle').setAttribute('stroke-dasharray', `${data.mem_usage}, 100`);
-                }
-            }
-        } catch (e) {}
-    };
-
-    wsInstance.onclose = () => {
-        wsInstance = null;
-        setTimeout(initWebSocketTelemetry, 3000);
-    };
-}
-
-function showDashboard() {
-    document.getElementById('login-container').style.display = 'none';
-    document.getElementById('dashboard-container').style.display = 'block';
-
-    // Load initial data
-    loadTunnels();
-    loadStats();
-    loadNodes();
-    initWebSocketTelemetry();
-
-    // Start polling stats and tunnels
-    setInterval(loadStats, 3000);
-    setInterval(loadTunnels, 2000); // Poll tunnels more frequently to reflect live speeds
-}
-
-function showLoginError(msg) {
-    const errorEl = document.getElementById('login-error');
-    errorEl.innerText = msg;
-    errorEl.style.display = 'block';
-}
-
-function formatSpeed(bytesPerSec) {
-    if (!bytesPerSec || bytesPerSec === 0) return "0 KB/s";
-    const kb = bytesPerSec / 1024;
-    if (kb < 1024) {
-        return `${kb.toFixed(1)} KB/s`;
     }
-    const mb = kb / 1024;
-    return `${mb.toFixed(1)} MB/s`;
+});
+
+// Helper Functions
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 KB';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-async function loadTunnels() {
-    try {
-        const res = await apiFetch('/api/tunnels');
-        if (!res || !res.ok) return;
-        const tunnels = await res.json();
-        
-        const body = document.getElementById('tunnels-body');
-        body.innerHTML = '';
-        
-        let activeCount = 0;
-        tunnels.forEach(t => {
-            if (t.status === 'active') activeCount++;
-            
-            const tr = document.createElement('tr');
-            
-            // Format status badge
-            const statusClass = t.status === 'active' ? 'active' : (t.status === 'deploying' ? 'deploying' : (t.status === 'error' || t.status === 'unreachable' ? 'error' : 'inactive'));
-            const statusText = t.status === 'active' ? 'ACTIVE' : t.status.toUpperCase();
-            
-            const pingHtml = (t.status === 'active' && t.e2e_latency_ms !== null && t.e2e_latency_ms !== undefined && t.e2e_latency_ms >= 0 && t.e2e_latency_ms < 500)
-                ? `<span class="ping-badge"><span class="ping-icon">⚡</span> ${Math.round(t.e2e_latency_ms)} ms</span>`
-                : `<span class="ping-badge timeout">--</span>`;
-
-            tr.innerHTML = `
-                <td><strong>${t.name}</strong></td>
-                <td><span class="proto-name">${t.protocol.toUpperCase()}</span></td>
-                <td>${t.iran_port}</td>
-                <td>${t.control_port}</td>
-                <td>${t.kharej_port}</td>
-                <td>
-                    <div class="status-pill ${statusClass}">
-                        <div class="dot"></div>
-                        ${statusText}
-                    </div>
-                </td>
-                <td>${pingHtml}</td>
-                <td>
-                    <span style="color: var(--color-cyan); font-weight: 500;">↓ ${formatSpeed(t.stats_speed_rx)}</span> / 
-                    <span style="color: var(--color-orange); font-weight: 500;">↑ ${formatSpeed(t.stats_speed_tx)}</span>
-                </td>
-                <td>
-                    <div class="action-buttons">
-                        <button class="btn btn-secondary" onclick="toggleTunnel(${t.id})">
-                            ${t.status === 'active' ? 'Stop' : 'Start'}
-                        </button>
-                        <button class="btn btn-secondary" style="background: rgba(168, 85, 247, 0.15); color: #a855f7;" onclick="showTelemetry(${t.id}, '${t.name}')">Telemetry</button>
-                        <button class="btn btn-secondary" style="background: rgba(0, 240, 255, 0.15); color: var(--color-cyan);" onclick="showEditModal(${t.id})">Edit</button>
-                        <button class="btn btn-secondary btn-danger" style="background: rgba(255,51,102,0.15); color: #ff3366;" onclick="deleteTunnel(${t.id})">Delete</button>
-                    </div>
-                </td>
-            `;
-            body.appendChild(tr);
-        });
-
-        document.getElementById('active-count').innerText = `${activeCount} / ${tunnels.length}`;
-    } catch (err) {
-        console.error(err);
-    }
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
-async function loadNodes() {
-    try {
-        const res = await apiFetch('/api/nodes');
-        if (res && res.ok) {
-            const nodes = await res.json();
-            const tbody = document.getElementById('nodes-body');
-            tbody.innerHTML = '';
-            
-            const tIranSelect = document.getElementById('tunnel-iran-select');
-            const tKharejSelect = document.getElementById('tunnel-kharej-select');
-            const eIranSelect = document.getElementById('edit-tunnel-iran-select');
-            const eKharejSelect = document.getElementById('edit-tunnel-kharej-select');
-
-            const iranHtml = '<option value="" disabled selected>-- Select Iran Node --</option>';
-            const kharejHtml = '<option value="" disabled selected>-- Select Kharej Node --</option>';
-            const editIranHtml = '<option value="">-- Main Server (Local) --</option>';
-            const editKharejHtml = '<option value="">-- Main Server (Local) --</option>';
-
-            tIranSelect.innerHTML = iranHtml;
-            eIranSelect.innerHTML = editIranHtml;
-            tKharejSelect.innerHTML = kharejHtml;
-            eKharejSelect.innerHTML = editKharejHtml;
-
-            nodes.forEach(n => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>${n.name}</td>
-                    <td>${n.host}</td>
-                    <td>${n.port}</td>
-                    <td>${n.username}</td>
-                    <td>
-                        <button class="btn btn-secondary btn-small" onclick="deleteNode(${n.id})">Delete</button>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-
-                if (n.role === 'iran' || n.role === 'both') {
-                    const opt = document.createElement('option');
-                    opt.value = n.id;
-                    opt.innerText = `${n.name} (${n.host})`;
-                    tIranSelect.appendChild(opt.cloneNode(true));
-                    eIranSelect.appendChild(opt.cloneNode(true));
-                }
-                if (n.role === 'kharej' || n.role === 'both') {
-                    const opt = document.createElement('option');
-                    opt.value = n.id;
-                    opt.innerText = `${n.name} (${n.host})`;
-                    tKharejSelect.appendChild(opt.cloneNode(true));
-                    eKharejSelect.appendChild(opt.cloneNode(true));
-                }
-            });
-        }
-    } catch (err) {
-        console.error(err);
-    }
-}
-
-async function loadStats() {
-    try {
-        const res = await apiFetch('/api/stats');
-        if (!res || !res.ok) return;
-        const stats = await res.json();
-        
-        // Update CPU Circular Ring
-        const cpuCircle = document.getElementById('cpu-circle');
-        const cpuText = document.getElementById('cpu-text');
-        const cpuVal = Math.round(stats.cpu_usage);
-        cpuCircle.setAttribute('stroke-dasharray', `${cpuVal}, 100`);
-        cpuText.innerText = `${cpuVal}%`;
-
-        // Update RAM Circular Ring
-        const ramCircle = document.getElementById('ram-circle');
-        const ramText = document.getElementById('ram-text');
-        const ramVal = Math.round(stats.mem_usage);
-        ramCircle.setAttribute('stroke-dasharray', `${ramVal}, 100`);
-        ramText.innerText = `${ramVal}%`;
-
-    } catch (err) {
-        console.error(err);
-    }
-}
-
-async function toggleTunnel(id) {
-    try {
-        const res = await apiFetch(`/api/tunnels/${id}/toggle`, { method: 'POST' });
-        if (res && res.ok) {
-            loadTunnels();
-        } else if (res) {
-            const errorMsg = await res.text();
-            alert(errorMsg || "Failed to toggle tunnel state");
-        }
-    } catch (err) {
-        console.error(err);
-    }
-}
-
-async function deleteTunnel(id) {
-    if (!confirm("Are you sure you want to delete this tunnel configuration?")) return;
-    try {
-        const res = await apiFetch(`/api/tunnels/${id}`, { method: 'DELETE' });
-        if (res && res.ok) {
-            loadTunnels();
-        }
-    } catch (err) {
-        console.error(err);
-    }
-}
-
-async function deleteNode(id) {
-    if (!confirm("Are you sure you want to delete this saved node?")) return;
-    try {
-        const res = await apiFetch(`/api/nodes/${id}`, { method: 'DELETE' });
-        if (res && res.ok) {
-            loadNodes();
-        }
-    } catch (err) {
-        console.error(err);
-    }
-}
-
-// Helper to get auth headers for API calls
-function authHeaders() {
-    const token = localStorage.getItem('cheragh_session');
-    return {
-        'Content-Type': 'application/json',
-        'Authorization': token ? `Bearer ${token}` : ''
-    };
-}
-
-// Wrapper for API calls to handle 401 logouts gracefully
-async function apiFetch(url, options = {}) {
-    const headers = authHeaders();
-    options.headers = { ...headers, ...options.headers };
-    try {
-        const res = await fetch(url, options);
-        if (res.status === 401) {
-            localStorage.removeItem('cheragh_session');
-            window.location.reload();
-            return null;
-        }
-        return res;
-    } catch (err) {
-        console.error("API Fetch Error:", err);
-        return null;
-    }
-}
-
-async function showEditModal(id) {
-    try {
-        await loadNodes();
-        const res = await apiFetch(`/api/tunnels/${id}`);
-        if (!res || !res.ok) return;
-        const t = await res.json();
-        window.editingTunnel = t;
-        
-        document.getElementById('edit-tunnel-id').value = t.id;
-        document.getElementById('edit-tunnel-name').value = t.name;
-        document.getElementById('edit-tunnel-protocol').value = t.protocol;
-        document.getElementById('edit-iran-port').value = t.iran_port;
-        document.getElementById('edit-control-port').value = t.control_port;
-        document.getElementById('edit-kharej-port').value = t.kharej_port;
-        document.getElementById('edit-backup-ips').value = t.backup_ips || '';
-        
-        let initialOpts = null;
-        if (t.transport_options) {
-            try { initialOpts = JSON.parse(t.transport_options); } catch (e) {}
-        }
-        
-        if (initialOpts) {
-            document.getElementById('edit-fragment-sni').checked = !!initialOpts.fragment_sni;
-            document.getElementById('edit-fragment-size').value = initialOpts.fragment_size !== undefined ? initialOpts.fragment_size : 5;
-            document.getElementById('edit-randomize-ua').checked = !!initialOpts.randomize_ua;
-            document.getElementById('edit-enable-padding').checked = !!initialOpts.enable_padding;
-            document.getElementById('edit-enable-chaffing').checked = !!initialOpts.enable_chaffing;
-            document.getElementById('edit-enable-ech').checked = !!initialOpts.enable_ech;
-            document.getElementById('edit-enable-multipath').checked = !!initialOpts.enable_multipath;
-            document.getElementById('edit-enable-bonding').checked = !!initialOpts.enable_bonding;
-            document.getElementById('edit-enable-ebpf').checked = !!initialOpts.enable_ebpf;
-            document.getElementById('edit-custom-sni').value = initialOpts.custom_sni || '';
-            document.getElementById('edit-mtu-size').value = initialOpts.mtu_size !== undefined ? initialOpts.mtu_size : 1380;
-        } else {
-            document.getElementById('edit-fragment-sni').checked = false;
-            document.getElementById('edit-fragment-size').value = 5;
-            document.getElementById('edit-randomize-ua').checked = false;
-            document.getElementById('edit-enable-padding').checked = false;
-            document.getElementById('edit-enable-chaffing').checked = false;
-            document.getElementById('edit-enable-ech').checked = false;
-            document.getElementById('edit-enable-multipath').checked = false;
-            document.getElementById('edit-enable-bonding').checked = false;
-            document.getElementById('edit-enable-ebpf').checked = false;
-            document.getElementById('edit-custom-sni').value = '';
-            document.getElementById('edit-mtu-size').value = 1380;
-        }
-
-        renderDynamicOptions(t.protocol, 'edit-dynamic-options-container', initialOpts);
-        document.getElementById('edit-tunnel-token').value = t.token;
-        document.getElementById('edit-decoy-url').value = t.decoy_url || '';
-        document.getElementById('edit-tunnel-hopping').checked = t.port_hopping === 1;
-        document.getElementById('edit-quota-limit').value = t.quota_limit_bytes ? (t.quota_limit_bytes / (1024 * 1024 * 1024)).toFixed(1) : 0;
-        document.getElementById('edit-speed-limit').value = t.speed_limit_kbps || 0;
-        if (t.expires_at && t.expires_at > 0) {
-            const dateObj = new Date(t.expires_at * 1000);
-            document.getElementById('edit-expires-at').value = dateObj.toISOString().split('T')[0];
-        } else {
-            document.getElementById('edit-expires-at').value = '';
-        }
-        document.getElementById('edit-tunnel-iran-select').value = t.iran_node_id || '';
-        document.getElementById('edit-tunnel-kharej-select').value = t.kharej_node_id || '';
-        if (window.toggleDecoyVisibility) {
-            window.toggleDecoyVisibility(t.protocol, 'edit-decoy-group');
-        }
-        
-        document.getElementById('edit-modal').style.display = 'flex';
-    } catch (err) {
-        console.error(err);
-    }
-}
-
+// Global Window Exports for Fallback Execution
+window.handleLogin = handleLogin;
+window.handleLogout = handleLogout;
+window.openCreateModal = openCreateModal;
+window.openNodesModal = openNodesModal;
+window.openBackupModal = openBackupModal;
+window.openAddNodeModal = openAddNodeModal;
+window.closeModal = closeModal;
+window.generateToken = generateToken;
 window.toggleTunnel = toggleTunnel;
 window.deleteTunnel = deleteTunnel;
 window.deleteNode = deleteNode;
 window.showEditModal = showEditModal;
 window.showTelemetry = showTelemetry;
 
-window.openNodesModal = function() {
-    loadNodes();
-    document.getElementById('nodes-modal').style.display = 'flex';
-};
-window.closeNodesModal = function() {
-    document.getElementById('nodes-modal').style.display = 'none';
-};
-window.openBackupModal = function() {
-    document.getElementById('backup-modal').style.display = 'flex';
-};
-window.closeBackupModal = function() {
-    document.getElementById('backup-modal').style.display = 'none';
-};
-window.openCreateModal = function() {
-    const tokenInput = document.getElementById('tunnel-token');
-    if (tokenInput) {
-        tokenInput.value = Math.random().toString(36).substring(2, 12).toUpperCase();
-    }
-    document.getElementById('create-modal').style.display = 'flex';
-};
-window.closeCreateModal = function() {
-    document.getElementById('create-modal').style.display = 'none';
-};
-window.closeEditModal = function() {
-    document.getElementById('edit-modal').style.display = 'none';
-};
-window.handleLogout = function() {
-    localStorage.removeItem('cheragh_session');
-    window.location.reload();
-};
-
-
-// Edit form submit & token helpers
-document.addEventListener('DOMContentLoaded', () => {
-    const editModal = document.getElementById('edit-modal');
-    const editForm = document.getElementById('edit-tunnel-form');
-
-    // Close edit modal
-    const closeEditBtn = document.getElementById('close-edit-modal');
-    if (closeEditBtn && editModal) {
-        closeEditBtn.addEventListener('click', () => {
-            editModal.style.display = 'none';
-        });
-    }
-
-    const editProtoSelect = document.getElementById('edit-tunnel-protocol');
-    if (editProtoSelect) {
-        editProtoSelect.addEventListener('change', () => {
-            renderDynamicOptions(editProtoSelect.value, 'edit-dynamic-options-container');
-            if (window.toggleDecoyVisibility) {
-                window.toggleDecoyVisibility(editProtoSelect.value, 'edit-decoy-group');
-            }
-        });
-    }
-
-    const genEditTokenBtn = document.getElementById('edit-gen-token-btn') || document.getElementById('gen-edit-token-btn');
-    if (genEditTokenBtn) {
-        genEditTokenBtn.addEventListener('click', () => {
-            const randToken = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
-            const tokenInput = document.getElementById('edit-tunnel-token');
-            if (tokenInput) tokenInput.value = randToken;
-        });
-    }
-
-    // Handle Edit Submit
-    if (editForm) {
-        editForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const id = document.getElementById('edit-tunnel-id').value;
-        const dynamicOpts = JSON.parse(extractDynamicOptions('edit-dynamic-options-container') || '{}');
-        dynamicOpts.fragment_sni = document.getElementById('edit-fragment-sni').checked;
-        dynamicOpts.fragment_size = parseInt(document.getElementById('edit-fragment-size').value || 5);
-        dynamicOpts.randomize_ua = document.getElementById('edit-randomize-ua').checked;
-        dynamicOpts.enable_padding = document.getElementById('edit-enable-padding').checked;
-        dynamicOpts.enable_chaffing = document.getElementById('edit-enable-chaffing').checked;
-        dynamicOpts.enable_ech = document.getElementById('edit-enable-ech').checked;
-        dynamicOpts.enable_multipath = document.getElementById('edit-enable-multipath').checked;
-        dynamicOpts.enable_bonding = document.getElementById('edit-enable-bonding').checked;
-        dynamicOpts.enable_ebpf = document.getElementById('edit-enable-ebpf').checked;
-        dynamicOpts.custom_sni = document.getElementById('edit-custom-sni').value || null;
-        dynamicOpts.mtu_size = parseInt(document.getElementById('edit-mtu-size').value || 1380);
-
-        const expDate = document.getElementById('edit-expires-at').value;
-        const expiresAtTs = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
-        const existing = window.editingTunnel || {};
-
-        const payload = {
-            id: parseInt(id),
-            name: document.getElementById('edit-tunnel-name').value,
-            iran_node_id: parseInt(document.getElementById('edit-tunnel-iran-select').value) || existing.iran_node_id || null,
-            kharej_node_id: parseInt(document.getElementById('edit-tunnel-kharej-select').value) || existing.kharej_node_id || null,
-            protocol: document.getElementById('edit-tunnel-protocol').value,
-            iran_port: parseInt(document.getElementById('edit-iran-port').value),
-            control_port: parseInt(document.getElementById('edit-control-port').value),
-            kharej_port: parseInt(document.getElementById('edit-kharej-port').value),
-            token: document.getElementById('edit-tunnel-token').value,
-            decoy_url: DECOY_PROTOCOLS.includes(document.getElementById('edit-tunnel-protocol').value)
-                ? document.getElementById('edit-decoy-url').value || "google.com"
-                : null,
-            transport_options: JSON.stringify(dynamicOpts),
-            backup_ips: document.getElementById('edit-backup-ips').value || null,
-            port_hopping: document.getElementById('edit-tunnel-hopping').checked ? 1 : 0,
-            quota_limit_bytes: Math.round(parseFloat(document.getElementById('edit-quota-limit').value || 0) * 1024 * 1024 * 1024),
-            quota_used_bytes: existing.quota_used_bytes || 0,
-            speed_limit_kbps: parseInt(document.getElementById('edit-speed-limit').value || 0),
-            expires_at: expiresAtTs,
-            status: existing.status || "inactive",
-            stats_rx: existing.stats_rx || 0,
-            stats_tx: existing.stats_tx || 0,
-            stats_speed_rx: existing.stats_speed_rx || 0,
-            stats_speed_tx: existing.stats_speed_tx || 0
-        };
-
-            try {
-                const res = await apiFetch(`/api/tunnels/${id}`, {
-                    method: 'PUT',
-                    body: JSON.stringify(payload)
-                });
-                if (res && res.ok) {
-                    editModal.style.display = 'none';
-                    await loadTunnels();
-                    alert("✅ Tunnel configuration saved successfully!");
-                } else if (res) {
-                    const errMsg = await res.text();
-                    alert("❌ Error saving tunnel: " + (errMsg || "Unknown server error"));
-                } else {
-                    alert("❌ Network error: Could not reach panel server");
-                }
-            } catch (err) {
-                console.error(err);
-                alert("❌ Error: " + err.message);
-            }
-        });
-    }
-});
-
-const PROTOCOL_OPTIONS_SCHEMA = {
-    "photon": [
-        { name: "mtu", label: "MTU (Max Transmission Unit)", type: "number", default: 1350 },
-        { name: "nodelay", label: "TCP NoDelay", type: "checkbox", default: true }
-    ],
-    "mirage": [
-        { name: "sni", label: "SNI (Server Name Indication)", type: "text", default: "www.microsoft.com" },
-        { name: "fingerprint", label: "uTLS Fingerprint", type: "select", options: ["chrome", "firefox", "safari", "random"], default: "chrome" }
-    ],
-    "spectre": [
-        { name: "sni", label: "SNI (Server Name Indication)", type: "text", default: "www.microsoft.com" },
-        { name: "fingerprint", label: "uTLS Fingerprint", type: "select", options: ["chrome", "firefox", "safari", "random"], default: "chrome" }
-    ],
-    "pulsar": [
-        { name: "up_mbps", label: "Upload Speed (Mbps)", type: "number", default: 100 },
-        { name: "down_mbps", label: "Download Speed (Mbps)", type: "number", default: 100 }
-    ],
-    "aura": [
-        { name: "host", label: "HTTP Host Header", type: "text", default: "bing.com" }
-    ],
-    "nova": [
-        { name: "host", label: "TLS Host Header", type: "text", default: "cloudflare.com" }
-    ]
-};
-
-function renderDynamicOptions(protocol, containerId, initialData = null) {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    container.innerHTML = '';
-    
-    const schema = PROTOCOL_OPTIONS_SCHEMA[protocol];
-    if (!schema) return;
-    
-    schema.forEach(field => {
-        const group = document.createElement('div');
-        group.className = 'form-group';
-        
-        const label = document.createElement('label');
-        label.innerText = field.label;
-        group.appendChild(label);
-        
-        let value = initialData && initialData[field.name] !== undefined ? initialData[field.name] : field.default;
-        
-        if (field.type === 'select') {
-            const select = document.createElement('select');
-            select.dataset.name = field.name;
-            select.dataset.type = field.type;
-            field.options.forEach(opt => {
-                const option = document.createElement('option');
-                option.value = opt;
-                option.innerText = opt;
-                if (opt === value) option.selected = true;
-                select.appendChild(option);
-            });
-            group.appendChild(select);
-        } else if (field.type === 'checkbox') {
-            const input = document.createElement('input');
-            input.type = 'checkbox';
-            input.dataset.name = field.name;
-            input.dataset.type = field.type;
-            if (value) input.checked = true;
-            group.appendChild(input);
-        } else {
-            const input = document.createElement('input');
-            input.type = field.type;
-            input.dataset.name = field.name;
-            input.dataset.type = field.type;
-            input.value = value;
-            group.appendChild(input);
-        }
-        
-        container.appendChild(group);
-    });
-}
-
-function extractDynamicOptions(containerId) {
-    const container = document.getElementById(containerId);
-    if (!container) return null;
-    
-    const elements = container.querySelectorAll('[data-name]');
-    if (elements.length === 0) return null;
-    
-    const opts = {};
-    elements.forEach(el => {
-        const name = el.dataset.name;
-        if (el.dataset.type === 'checkbox') {
-            opts[name] = el.checked;
-        } else if (el.dataset.type === 'number') {
-            opts[name] = parseInt(el.value);
-        } else {
-            opts[name] = el.value;
-        }
-    });
-    
-    return JSON.stringify(opts);
-}
-
-let telemetryChartInstance = null;
-let telemetryInterval = null;
-
-async function showTelemetry(id, name) {
-    const section = document.getElementById('telemetry-section');
-    const title = document.getElementById('telemetry-title');
-    
-    title.innerText = `Telemetry History: ${name}`;
-    section.style.display = 'block';
-    section.scrollIntoView({ behavior: 'smooth' });
-    
-    // Clear any active interval first
-    if (telemetryInterval) {
-        clearInterval(telemetryInterval);
-    }
-    
-    // Initial fetch
-    await updateTelemetryChart(id);
-    
-    // Auto-update every 10 seconds
-    telemetryInterval = setInterval(() => {
-        updateTelemetryChart(id);
-    }, 10000);
-}
-
-async function updateTelemetryChart(id) {
-    try {
-        const res = await apiFetch(`/api/tunnels/${id}/telemetry`);
-        if (!res || !res.ok) return;
-        const logs = await res.json();
-        
-        const labels = logs.map(l => {
-            const date = new Date(l.timestamp * 1000);
-            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        });
-        const rttData = logs.map(l => l.rtt_ms >= 999 ? null : l.rtt_ms);
-        const rxSpeedData = logs.map(l => Math.round((l.speed_rx || 0) / 1024));
-        const txSpeedData = logs.map(l => Math.round((l.speed_tx || 0) / 1024));
-        
-        const ctx = document.getElementById('telemetry-chart').getContext('2d');
-        
-        if (telemetryChartInstance) {
-            telemetryChartInstance.data.labels = labels;
-            telemetryChartInstance.data.datasets[0].data = rttData;
-            telemetryChartInstance.data.datasets[1].data = rxSpeedData;
-            telemetryChartInstance.data.datasets[2].data = txSpeedData;
-            telemetryChartInstance.update();
-        } else {
-            telemetryChartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'RTT Latency (ms)',
-                            data: rttData,
-                            borderColor: '#a855f7',
-                            backgroundColor: 'rgba(168, 85, 247, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            yAxisID: 'y'
-                        },
-                        {
-                            label: 'Download Speed (KB/s)',
-                            data: rxSpeedData,
-                            borderColor: '#3b82f6',
-                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            yAxisID: 'y1'
-                        },
-                        {
-                            label: 'Upload Speed (KB/s)',
-                            data: txSpeedData,
-                            borderColor: '#10b981',
-                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            borderWidth: 2,
-                            tension: 0.3,
-                            yAxisID: 'y1'
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        y: {
-                            type: 'linear',
-                            display: true,
-                            position: 'left',
-                            title: {
-                                display: true,
-                                text: 'RTT (ms)',
-                                color: '#fff'
-                            },
-                            ticks: { color: '#ccc' },
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
-                        },
-                        y1: {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: {
-                                display: true,
-                                text: 'Speed (KB/s)',
-                                color: '#fff'
-                            },
-                            ticks: { color: '#ccc' },
-                            grid: { drawOnChartArea: false },
-                            min: 0
-                        },
-                        x: {
-                            ticks: { color: '#ccc' },
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
-                        }
-                    },
-                    plugins: {
-                        legend: {
-                            labels: { color: '#fff' }
-                        }
-                    }
-                }
-            });
-        }
-    } catch (err) {
-        console.error(err);
-    }
-}
-
-// Add close button listener
-document.addEventListener('DOMContentLoaded', () => {
-    const closeBtn = document.getElementById('close-telemetry-btn');
-    if (closeBtn) {
-        closeBtn.addEventListener('click', () => {
-            document.getElementById('telemetry-section').style.display = 'none';
-            if (telemetryInterval) {
-                clearInterval(telemetryInterval);
-                telemetryInterval = null;
-            }
-        });
-    }
-});
-
-// Accordion toggle helper
-function toggleAccordion(header) {
-    const accordion = header.parentElement;
-    const content = accordion.querySelector('.accordion-content');
-    accordion.classList.toggle('open');
-    if (content.style.display === 'block') {
-        content.style.display = 'none';
+// DOM Initialization Trigger
+function initApp() {
+    const token = getSessionToken();
+    if (token) {
+        showDashboard();
     } else {
-        content.style.display = 'block';
+        document.getElementById('login-container').style.display = 'flex';
+    }
+
+    // Protocol dropdown listeners
+    const createProto = document.getElementById('tunnel-protocol');
+    if (createProto) {
+        createProto.addEventListener('change', () => toggleDecoyGroup(createProto.value, 'decoy-group'));
+    }
+    const editProto = document.getElementById('edit-tunnel-protocol');
+    if (editProto) {
+        editProto.addEventListener('change', () => toggleDecoyGroup(editProto.value, 'edit-decoy-group'));
     }
 }
-window.toggleAccordion = toggleAccordion;
-
-} // end initApp
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initApp);
 } else {
     initApp();
 }
-

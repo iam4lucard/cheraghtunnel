@@ -3,26 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CheraghTunnel - Premium Reverse Tunnel Panel</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/style.css?v=1.14.11">
+    <title>CheraghTunnel - Reverse Tunnel Management Console</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css?v=1.22.0">
 </head>
 <body>
     <!-- Login Page -->
-    <div id="login-container" class="glass-card login-card">
+    <div id="login-container" class="glass-card">
         <div class="logo-area">
             <div class="glow-orb orange"></div>
             <h2>Cheragh<span>Tunnel</span></h2>
-            <p>Illuminate Your Connection</p>
+            <p>Reverse Tunnel Control Center</p>
         </div>
-        <form id="login-form" onsubmit="handleLogin(event); return false;">
+        <form id="login-form">
             <div class="form-group">
                 <label for="username">Username</label>
-                <input type="text" id="username" name="username" required placeholder="admin">
+                <input type="text" id="username" name="username" required placeholder="admin" autocomplete="username">
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" name="password" required placeholder="••••••••">
+                <input type="password" id="password" name="password" required placeholder="••••••••" autocomplete="current-password">
             </div>
             <button type="submit" class="btn btn-primary btn-glow">Unlock Panel</button>
             <p id="login-error" class="error-text" style="display: none;"></p>
@@ -35,20 +35,20 @@
         <header>
             <div class="logo-area">
                 <h2>Cheragh<span>Tunnel</span></h2>
-                <div class="badge">PRO</div>
+                <div class="badge">PRO v1.22</div>
             </div>
             <div class="user-profile">
-                <span>Admin</span>
-                <button id="manage-nodes-btn" onclick="openNodesModal()" class="btn btn-primary" style="margin-right: 10px;">Manage Nodes</button>
-                <button id="open-backup-modal-btn" onclick="openBackupModal()" class="btn btn-primary" style="margin-right: 10px;">Backup / Restore</button>
-                <button id="logout-btn" onclick="handleLogout()" class="btn btn-secondary">Logout</button>
+                <span>Administrator</span>
+                <button type="button" data-action="open-nodes-modal" id="manage-nodes-btn" class="btn btn-primary">Manage Nodes</button>
+                <button type="button" data-action="open-backup-modal" id="open-backup-modal-btn" class="btn btn-primary">Backup / Restore</button>
+                <button type="button" data-action="logout" id="logout-btn" class="btn btn-secondary">Logout</button>
             </div>
         </header>
 
-        <!-- Stats Bar -->
+        <!-- System Stats Row -->
         <div class="stats-row">
             <div class="glass-card stat-box">
-                <h3>CPU Usage</h3>
+                <h3>CPU Load</h3>
                 <div class="stats-radial">
                     <svg viewBox="0 0 36 36" class="circular-chart">
                         <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
@@ -72,17 +72,16 @@
             <div class="glass-card stat-box">
                 <h3>Active Tunnels</h3>
                 <div class="stat-value" id="active-count">0 / 0</div>
-                <p>Tunnels established</p>
+                <p style="color: var(--text-muted); font-size: 0.85rem;">Active Established Tunnels</p>
             </div>
         </div>
 
-
-        <!-- Tunnels Management Grid -->
-        <main class="grid">
+        <!-- Tunnels Table -->
+        <main>
             <section class="tunnels-list-section glass-card">
                 <div class="section-header">
-                    <h3>Tunnel Configurations</h3>
-                    <button id="open-create-modal" onclick="openCreateModal()" class="btn btn-primary">Create Tunnel</button>
+                    <h3>Active Tunnel Configurations</h3>
+                    <button type="button" data-action="open-create-modal" id="open-create-modal" class="btn btn-primary">+ Create Tunnel</button>
                 </div>
                 <div class="table-container">
                     <table>
@@ -100,16 +99,9 @@
                             </tr>
                         </thead>
                         <tbody id="tunnels-body">
-                            <!-- Populated dynamically -->
+                            <!-- Populated via JS -->
                         </tbody>
                     </table>
-            <section class="glass-card" style="margin-top: 30px; display: none;" id="telemetry-section">
-                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <h2 style="margin: 0; font-size: 1.4rem;" id="telemetry-title">Tunnel Telemetry (RTT & Packet Loss)</h2>
-                    <button class="btn btn-secondary btn-small" id="close-telemetry-btn">Hide Chart</button>
-                </div>
-                <div style="width: 100%; height: 260px; position: relative;">
-                    <canvas id="telemetry-chart"></canvas>
                 </div>
             </section>
         </main>
@@ -124,42 +116,40 @@
                     <label for="tunnel-name">Tunnel Name</label>
                     <input type="text" id="tunnel-name" required placeholder="e.g. Tehran-Frankfurt-TCP">
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="tunnel-protocol">Transport Protocol</label>
-                        <select id="tunnel-protocol">
-                            <option value="beam">Beam (Direct TCP - Pure TCP Multiplex)</option>
-                            <option value="aura">Aura (HTTP - HTTP Header Mimicry)</option>
-                            <option value="nova">Nova (Direct TLS - Pure TLS Encryption)</option>
-                            <option value="glimmer">Glimmer (WS - Plain WebSocket over TCP)</option>
-                            <option value="beacon">Beacon (WSS - WebSocket Secure over TLS)</option>
-                            <option value="flash">Flash (Reliable UDP - Reliable sliding-window UDP)</option>
-                            <option value="ray">Ray (Raw UDP - Raw best-effort UDP)</option>
-                            <option value="photon">Photon (FakeTCP - Stateful Raw TCP + KCP)</option>
-                            <option value="lantern">Lantern (Reliable UDP - IP TUN Framing)</option>
-                            <option value="mirage">Mirage (Reality TLS - TLS Decoy Intercept)</option>
-                            <option value="spectre">Spectre (Low-Latency Game TCP - Multipath Reality TLS)</option>
-                            <option value="halo">Halo (WebRTC - Video-Call Mimicry)</option>
-                            <option value="pulsar">Pulsar (Paced UDP - High-Speed Paced Reliable UDP)</option>
-                            <option value="oracle">Oracle (DNS EDNS0 - DNS Tunnel Masquerading)</option>
-                            <option value="vortex">Vortex (Source Engine - Game Query Mimicry)</option>
-                            <option value="nirvana">Nirvana (HTTP Chunked - HTTP POST Obfuscated Tunnel)</option>
-                        </select>
-                    </div>
+                <div class="form-group">
+                    <label for="tunnel-protocol">Transport Protocol</label>
+                    <select id="tunnel-protocol">
+                        <option value="beam">Beam (Direct TCP - Pure TCP Multiplex)</option>
+                        <option value="aura">Aura (HTTP - HTTP Header Mimicry)</option>
+                        <option value="nova">Nova (Direct TLS - Pure TLS Encryption)</option>
+                        <option value="glimmer">Glimmer (WS - Plain WebSocket over TCP)</option>
+                        <option value="beacon">Beacon (WSS - WebSocket Secure over TLS)</option>
+                        <option value="flash">Flash (Reliable UDP - Sliding-window UDP)</option>
+                        <option value="ray">Ray (Raw UDP - Raw Best-effort UDP)</option>
+                        <option value="photon">Photon (FakeTCP - Stateful Raw TCP + KCP)</option>
+                        <option value="lantern">Lantern (Reliable UDP - IP TUN Framing)</option>
+                        <option value="mirage">Mirage (Reality TLS - TLS Decoy Intercept)</option>
+                        <option value="spectre">Spectre (Low-Latency Game TCP - Multipath Reality TLS)</option>
+                        <option value="halo">Halo (WebRTC - Video-Call Mimicry)</option>
+                        <option value="pulsar">Pulsar (Paced UDP - High-Speed Paced UDP)</option>
+                        <option value="oracle">Oracle (DNS EDNS0 - DNS Masquerading)</option>
+                        <option value="vortex">Vortex (Source Engine - Game Query Mimicry)</option>
+                        <option value="nirvana">Nirvana (HTTP Chunked - Obfuscated Tunnel)</option>
+                    </select>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="tunnel-iran-select">Iran Node (Required)</label>
+                        <label for="tunnel-iran-select">Iran Node</label>
                         <select id="tunnel-iran-select" required></select>
                     </div>
                     <div class="form-group">
-                        <label for="tunnel-kharej-select">Kharej Node (Required)</label>
+                        <label for="tunnel-kharej-select">Kharej Node</label>
                         <select id="tunnel-kharej-select" required></select>
                     </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="iran-port">Iran Public Port (Client Access)</label>
+                        <label for="iran-port">Iran Public Port</label>
                         <input type="number" id="iran-port" required placeholder="443" min="1" max="65535">
                     </div>
                     <div class="form-group">
@@ -167,54 +157,51 @@
                         <input type="number" id="control-port" required placeholder="8090" min="1" max="65535">
                     </div>
                     <div class="form-group">
-                        <label for="kharej-port">Kharej Port (Target Local Port)</label>
+                        <label for="kharej-port">Kharej Local Target Port</label>
                         <input type="number" id="kharej-port" required placeholder="443" min="1" max="65535">
                     </div>
                 </div>
-
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="tunnel-token">Auth Token</label>
-                        <div style="display: flex; gap: 10px;">
-                            <input type="text" id="tunnel-token" required style="flex: 1;">
-                            <button type="button" id="gen-token-btn" class="btn btn-secondary btn-small" style="margin-top: 0; width: auto;">Generate</button>
-                        </div>
+                <div class="form-group">
+                    <label for="tunnel-token">Auth Token</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="tunnel-token" required style="flex: 1;" class="mono">
+                        <button type="button" data-action="generate-token" data-field="tunnel-token" id="gen-token-btn" class="btn btn-secondary btn-small">Generate</button>
                     </div>
                 </div>
 
                 <!-- Advanced Settings Accordion -->
                 <div class="advanced-settings-accordion">
-                    <div class="accordion-header" onclick="toggleAccordion(this)">
-                        <h4>⚙️ Advanced Settings</h4>
+                    <div class="accordion-header" data-action="toggle-accordion">
+                        <h4>⚙️ Advanced Transport Settings</h4>
                         <span class="accordion-arrow">▼</span>
                     </div>
-                    <div class="accordion-content" style="display: none; padding-top: 15px;">
-                        <div class="form-group" id="decoy-group" style="display: none; margin-bottom: 20px;">
-                            <label for="decoy-url">Decoy Domain(s) (Comma-separated for spraying)</label>
-                            <input type="text" id="decoy-url" placeholder="e.g. microsoft.com, soft98.ir, wikipedia.org">
+                    <div class="accordion-content" style="display: none;">
+                        <div class="form-group" id="decoy-group" style="display: none; margin-bottom: 15px;">
+                            <label for="decoy-url">Decoy Domain(s) (Comma-separated)</label>
+                            <input type="text" id="decoy-url" placeholder="e.g. microsoft.com, wikipedia.org">
                         </div>
-                        <div class="form-row" style="margin-bottom: 20px;">
+                        <div class="form-row" style="margin-bottom: 15px;">
                             <div class="form-group">
-                                <label for="quota-limit">Quota Limit (GB - 0 for unlimited)</label>
-                                <input type="number" id="quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
+                                <label for="quota-limit">Quota Limit (GB - 0 for ∞)</label>
+                                <input type="number" id="quota-limit" value="0" min="0" step="0.1">
                             </div>
                             <div class="form-group">
-                                <label for="speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
-                                <input type="number" id="speed-limit" value="0" min="0" placeholder="e.g. 5000">
+                                <label for="speed-limit">Speed Limit (KB/s - 0 for ∞)</label>
+                                <input type="number" id="speed-limit" value="0" min="0">
                             </div>
                             <div class="form-group">
                                 <label for="expires-at">Expiration Date</label>
                                 <input type="date" id="expires-at">
                             </div>
                         </div>
-                        <div class="form-group" style="margin-bottom: 20px;">
-                            <label for="backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
+                        <div class="form-group" style="margin-bottom: 15px;">
+                            <label for="backup-ips">Backup Iran IPs (Comma-separated)</label>
                             <input type="text" id="backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
                         </div>
-                        <div class="form-row" style="margin-bottom: 20px;">
+                        <div class="form-row" style="margin-bottom: 15px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="fragment-sni" style="width: auto;">
-                                <label for="fragment-sni" style="margin: 0; font-size: 0.9rem;">Enable SNI Fragmentation</label>
+                                <label for="fragment-sni" style="margin: 0;">Enable SNI Fragmentation</label>
                             </div>
                             <div class="form-group">
                                 <label for="fragment-size">SNI Fragment Size (bytes)</label>
@@ -224,63 +211,64 @@
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="randomize-ua" style="width: auto;">
-                                <label for="randomize-ua" style="margin: 0; font-size: 0.9rem;">Randomize User-Agent</label>
+                                <label for="randomize-ua" style="margin: 0;">Randomize User-Agent</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="tunnel-hopping" style="width: auto;">
-                                <label for="tunnel-hopping" style="margin: 0; font-size: 0.9rem;">Enable Port Hopping</label>
+                                <label for="tunnel-hopping" style="margin: 0;">Enable Port Hopping</label>
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="enable-padding" style="width: auto;">
-                                <label for="enable-padding" style="margin: 0; font-size: 0.9rem;">🔒 Dynamic Packet Padding</label>
+                                <label for="enable-padding" style="margin: 0;">🔒 Dynamic Packet Padding</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="enable-chaffing" style="width: auto;">
-                                <label for="enable-chaffing" style="margin: 0; font-size: 0.9rem;">📡 Dummy Chaffing Traffic</label>
+                                <label for="enable-chaffing" style="margin: 0;">📡 Dummy Chaffing Traffic</label>
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="enable-ech" style="width: auto;">
-                                <label for="enable-ech" style="margin: 0; font-size: 0.9rem;">🛡️ Encrypted ClientHello (ECH)</label>
+                                <label for="enable-ech" style="margin: 0;">🛡️ Encrypted ClientHello (ECH)</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="enable-multipath" style="width: auto;">
-                                <label for="enable-multipath" style="margin: 0; font-size: 0.9rem;">🌐 Multipath IP Spraying</label>
+                                <label for="enable-multipath" style="margin: 0;">🌐 Multipath IP Spraying</label>
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="enable-jitter" style="width: auto;">
-                                <label for="enable-jitter" style="margin: 0; font-size: 0.9rem;">🎲 Gaussian Jitter Engine</label>
+                                <label for="enable-jitter" style="margin: 0;">🎲 Gaussian Jitter Engine</label>
                             </div>
                             <div class="form-group">
-                                <label for="jitter-ms" style="margin: 0; font-size: 0.9rem;">Max Jitter (ms)</label>
+                                <label for="jitter-ms" style="margin: 0;">Max Jitter (ms)</label>
                                 <input type="number" id="jitter-ms" value="10" min="1" max="50">
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="enable-adaptive-fec" style="width: auto;">
-                                <label for="enable-adaptive-fec" style="margin: 0; font-size: 0.9rem;">📈 Adaptive FEC Tuning</label>
+                                <label for="enable-adaptive-fec" style="margin: 0;">📈 Adaptive FEC Tuning</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="enable-fallback" style="width: auto;">
-                                <label for="enable-fallback" style="margin: 0; font-size: 0.9rem;">🔄 Seamless Transport Fallback</label>
+                                <label for="enable-fallback" style="margin: 0;">🔄 Seamless Transport Fallback</label>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="modal-actions">
-                    <button type="button" id="close-create-modal" onclick="closeCreateModal()" class="btn btn-secondary">Cancel</button>
+                    <button type="button" data-action="close-modal" data-target="create-modal" id="close-create-modal" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create Tunnel</button>
                 </div>
             </form>
         </div>
     </div>
+
     <!-- Edit Tunnel Modal -->
     <div id="edit-modal" class="modal-overlay" style="display: none;">
         <div class="glass-card modal-card">
@@ -299,17 +287,17 @@
                         <option value="nova">Nova (Direct TLS - Pure TLS Encryption)</option>
                         <option value="glimmer">Glimmer (WS - Plain WebSocket over TCP)</option>
                         <option value="beacon">Beacon (WSS - WebSocket Secure over TLS)</option>
-                        <option value="flash">Flash (Reliable UDP - Reliable sliding-window UDP)</option>
-                        <option value="ray">Ray (Raw UDP - Raw best-effort UDP)</option>
+                        <option value="flash">Flash (Reliable UDP - Sliding-window UDP)</option>
+                        <option value="ray">Ray (Raw UDP - Raw Best-effort UDP)</option>
                         <option value="photon">Photon (FakeTCP - Stateful Raw TCP + KCP)</option>
                         <option value="lantern">Lantern (Reliable UDP - IP TUN Framing)</option>
                         <option value="mirage">Mirage (Reality TLS - TLS Decoy Intercept)</option>
                         <option value="spectre">Spectre (Low-Latency Game TCP - Multipath Reality TLS)</option>
                         <option value="halo">Halo (WebRTC - Video-Call Mimicry)</option>
-                        <option value="pulsar">Pulsar (Paced UDP - High-Speed Paced Reliable UDP)</option>
-                        <option value="oracle">Oracle (DNS EDNS0 - DNS Tunnel Masquerading)</option>
+                        <option value="pulsar">Pulsar (Paced UDP - High-Speed Paced UDP)</option>
+                        <option value="oracle">Oracle (DNS EDNS0 - DNS Masquerading)</option>
                         <option value="vortex">Vortex (Source Engine - Game Query Mimicry)</option>
-                        <option value="nirvana">Nirvana (HTTP Chunked - HTTP POST Obfuscated Tunnel)</option>
+                        <option value="nirvana">Nirvana (HTTP Chunked - Obfuscated Tunnel)</option>
                     </select>
                 </div>
                 <div class="form-row">
@@ -324,64 +312,61 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="edit-iran-port">Iran Public Port (Client Access)</label>
-                        <input type="number" id="edit-iran-port" required placeholder="e.g. 443" min="1" max="65535">
+                        <label for="edit-iran-port">Iran Public Port</label>
+                        <input type="number" id="edit-iran-port" required placeholder="443" min="1" max="65535">
                     </div>
                     <div class="form-group">
                         <label for="edit-control-port">Server Control Port</label>
-                        <input type="number" id="edit-control-port" required placeholder="e.g. 8090" min="1" max="65535">
+                        <input type="number" id="edit-control-port" required placeholder="8090" min="1" max="65535">
                     </div>
                 </div>
                 <div class="form-group">
-                    <label for="edit-kharej-port">Kharej Port (Target Local Port)</label>
-                    <input type="number" id="edit-kharej-port" required placeholder="e.g. 8080" min="1" max="65535">
+                    <label for="edit-kharej-port">Kharej Local Target Port</label>
+                    <input type="number" id="edit-kharej-port" required placeholder="443" min="1" max="65535">
                 </div>
-
                 <div class="form-group">
                     <label for="edit-tunnel-token">Auth Token</label>
                     <div style="display: flex; gap: 10px;">
-                        <input type="text" id="edit-tunnel-token" required style="flex: 1;">
-                        <button type="button" id="edit-gen-token-btn" class="btn btn-secondary btn-small" style="margin-top: 0; width: auto;">Generate</button>
+                        <input type="text" id="edit-tunnel-token" required style="flex: 1;" class="mono">
+                        <button type="button" data-action="generate-token" data-field="edit-tunnel-token" id="edit-gen-token-btn" class="btn btn-secondary btn-small">Generate</button>
                     </div>
                 </div>
 
-                <div id="edit-dynamic-options-container" class="dynamic-options-container">
-                    <!-- Dynamic protocol-specific options will be injected here via JS -->
-                </div>
+                <div id="edit-dynamic-options-container" class="dynamic-options-container"></div>
 
                 <!-- Advanced Settings Accordion -->
                 <div class="advanced-settings-accordion">
-                    <div class="accordion-header" onclick="toggleAccordion(this)">
-                        <h4>⚙️ Advanced Settings</h4>
+                    <div class="accordion-header" data-action="toggle-accordion">
+                        <h4>⚙️ Advanced Transport Settings</h4>
                         <span class="accordion-arrow">▼</span>
                     </div>
-                    <div class="accordion-content" style="display: none; padding-top: 15px;">
-                        <div class="form-group" id="edit-decoy-group" style="display: none; margin-bottom: 20px;">
-                            <label for="edit-decoy-url">Decoy Domain(s) (Comma-separated for spraying)</label>
-                            <input type="text" id="edit-decoy-url" placeholder="e.g. microsoft.com, soft98.ir, wikipedia.org">
+                    <div class="accordion-content" style="display: none;">
+                        <div class="form-group" id="edit-decoy-group" style="display: none; margin-bottom: 15px;">
+                            <label for="edit-decoy-url">Decoy Domain(s) (Comma-separated)</label>
+                            <input type="text" id="edit-decoy-url" placeholder="e.g. microsoft.com, wikipedia.org">
                         </div>
-                        <div class="form-row" style="margin-bottom: 20px;">
+                        <div class="form-row" style="margin-bottom: 15px;">
                             <div class="form-group">
-                                <label for="edit-quota-limit">Quota Limit (GB - 0 for unlimited)</label>
-                                <input type="number" id="edit-quota-limit" value="0" min="0" step="0.1" placeholder="e.g. 100">
+                                <label for="edit-quota-limit">Quota Limit (GB - 0 for ∞)</label>
+                                <input type="number" id="edit-quota-limit" value="0" min="0" step="0.1">
                             </div>
                             <div class="form-group">
-                                <label for="edit-speed-limit">Speed Limit (KB/s - 0 for unlimited)</label>
-                                <input type="number" id="edit-speed-limit" value="0" min="0" placeholder="e.g. 5000">
+                                <label for="edit-speed-limit">Speed Limit (KB/s - 0 for ∞)</label>
+                                <input type="number" id="edit-speed-limit" value="0" min="0">
                             </div>
                             <div class="form-group">
                                 <label for="edit-expires-at">Expiration Date</label>
                                 <input type="date" id="edit-expires-at">
                             </div>
                         </div>
-                        <div class="form-group" style="margin-bottom: 20px;">
-                            <label for="edit-backup-ips">Backup Iran IPs (Comma separated - Optional)</label>
+                        <div class="form-group" style="margin-bottom: 15px;">
+                            <label for="edit-backup-ips">Backup Iran IPs (Comma-separated)</label>
                             <input type="text" id="edit-backup-ips" placeholder="e.g. 192.168.1.5, 10.0.0.8">
                         </div>
-                        <div class="form-row" style="margin-bottom: 20px;">
+                        <div class="form-row" style="margin-bottom: 15px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-fragment-sni" style="width: auto;">
-                                <label for="edit-fragment-sni" style="margin: 0; font-size: 0.9rem;">Enable SNI Fragmentation</label>
+                                <label for="edit-fragment-sni" style="margin: 0;">Enable SNI Fragmentation</label>
                             </div>
                             <div class="form-group">
                                 <label for="edit-fragment-size">SNI Fragment Size (bytes)</label>
@@ -391,41 +376,41 @@
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-randomize-ua" style="width: auto;">
-                                <label for="edit-randomize-ua" style="margin: 0; font-size: 0.9rem;">Randomize User-Agent</label>
+                                <label for="edit-randomize-ua" style="margin: 0;">Randomize User-Agent</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-tunnel-hopping" style="width: auto;">
-                                <label for="edit-tunnel-hopping" style="margin: 0; font-size: 0.9rem;">Enable Port Hopping</label>
+                                <label for="edit-tunnel-hopping" style="margin: 0;">Enable Port Hopping</label>
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-enable-padding" style="width: auto;">
-                                <label for="edit-enable-padding" style="margin: 0; font-size: 0.9rem;">🔒 Dynamic Packet Padding</label>
+                                <label for="edit-enable-padding" style="margin: 0;">🔒 Dynamic Packet Padding</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-enable-chaffing" style="width: auto;">
-                                <label for="edit-enable-chaffing" style="margin: 0; font-size: 0.9rem;">📡 Dummy Chaffing Traffic</label>
+                                <label for="edit-enable-chaffing" style="margin: 0;">📡 Dummy Chaffing Traffic</label>
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-enable-ech" style="width: auto;">
-                                <label for="edit-enable-ech" style="margin: 0; font-size: 0.9rem;">🛡️ Encrypted ClientHello (ECH)</label>
+                                <label for="edit-enable-ech" style="margin: 0;">🛡️ Encrypted ClientHello (ECH)</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-enable-multipath" style="width: auto;">
-                                <label for="edit-enable-multipath" style="margin: 0; font-size: 0.9rem;">🌐 Multipath IP Spraying</label>
+                                <label for="edit-enable-multipath" style="margin: 0;">🌐 Multipath IP Spraying</label>
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-enable-bonding" style="width: auto;">
-                                <label for="edit-enable-bonding" style="margin: 0; font-size: 0.9rem;">🔀 Multi-Path Tunnel Bonding</label>
+                                <label for="edit-enable-bonding" style="margin: 0;">🔀 Multi-Path Tunnel Bonding</label>
                             </div>
                             <div class="form-group" style="display: flex; align-items: center; gap: 8px;">
                                 <input type="checkbox" id="edit-enable-ebpf" style="width: auto;">
-                                <label for="edit-enable-ebpf" style="margin: 0; font-size: 0.9rem;">⚡ eBPF Kernel Fast-Path</label>
+                                <label for="edit-enable-ebpf" style="margin: 0;">⚡ eBPF Kernel Fast-Path</label>
                             </div>
                         </div>
                         <div class="form-row" style="margin-bottom: 10px;">
@@ -442,7 +427,7 @@
                 </div>
 
                 <div class="modal-actions">
-                    <button type="button" id="close-edit-modal" onclick="closeEditModal()" class="btn btn-secondary">Cancel</button>
+                    <button type="button" data-action="close-modal" data-target="edit-modal" id="close-edit-modal" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                 </div>
             </form>
@@ -451,13 +436,13 @@
 
     <!-- Manage Nodes Modal -->
     <div id="nodes-modal" class="modal-overlay" style="display: none;">
-        <div class="glass-card modal-card" style="max-width: 650px;">
+        <div class="glass-card modal-card" style="max-width: 680px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <h3>Manage Saved Remote Nodes</h3>
-                <button type="button" id="open-add-node-modal" class="btn btn-primary btn-small">Add Node</button>
+                <button type="button" data-action="open-add-node-modal" id="open-add-node-modal" class="btn btn-primary btn-small">+ Add Node</button>
             </div>
-            <p>Saved SSH credentials used for quick deployment of Kharej servers.</p>
-            <div class="table-container">
+            <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 4px;">Saved remote server SSH profiles for fast automated deployment.</p>
+            <div class="table-container" style="margin-top: 15px;">
                 <table>
                     <thead>
                         <tr>
@@ -469,48 +454,47 @@
                         </tr>
                     </thead>
                     <tbody id="nodes-body">
-                        <!-- Populated dynamically -->
+                        <!-- Populated via JS -->
                     </tbody>
                 </table>
             </div>
-            <div class="modal-actions" style="margin-top: 20px;">
-                <button type="button" id="close-nodes-modal" onclick="closeNodesModal()" class="btn btn-primary">Close</button>
+            <div class="modal-actions">
+                <button type="button" data-action="close-modal" data-target="nodes-modal" id="close-nodes-modal" class="btn btn-primary">Close</button>
             </div>
         </div>
     </div>
 
-    
     <!-- Add Node Modal -->
     <div id="add-node-modal" class="modal-overlay" style="display: none;">
         <div class="glass-card modal-card">
-            <h3>Add Remote Node</h3>
+            <h3>Add Remote Node Credentials</h3>
             <form id="add-node-form">
                 <div class="form-group">
-                    <label for="add-node-name">Node Name</label>
+                    <label for="add-node-name">Node Identifier</label>
                     <input type="text" id="add-node-name" required placeholder="e.g. Tehran Server 1">
                 </div>
                 <div class="form-group">
-                    <label for="add-node-role">Role</label>
+                    <label for="add-node-role">Server Role</label>
                     <select id="add-node-role">
                         <option value="iran">Iran Server (Master)</option>
                         <option value="kharej">Kharej Server (Client)</option>
-                        <option value="both">Both</option>
+                        <option value="both">Both Roles</option>
                     </select>
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex: 3;">
-                        <label for="add-node-host">IP/Host</label>
-                        <input type="text" id="add-node-host" required placeholder="e.g. 185.12.3.4">
+                        <label for="add-node-host">IP / Hostname</label>
+                        <input type="text" id="add-node-host" required placeholder="185.12.3.4" class="mono">
                     </div>
                     <div class="form-group" style="flex: 1;">
                         <label for="add-node-port">SSH Port</label>
-                        <input type="number" id="add-node-port" value="22" required min="1" max="65535">
+                        <input type="number" id="add-node-port" value="22" required min="1" max="65535" class="mono">
                     </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label for="add-node-user">SSH Username</label>
-                        <input type="text" id="add-node-user" value="root" required>
+                        <input type="text" id="add-node-user" value="root" required class="mono">
                     </div>
                     <div class="form-group">
                         <label for="add-node-pass">SSH Password (Optional)</label>
@@ -519,71 +503,71 @@
                 </div>
                 <div class="form-group">
                     <label for="add-node-key">SSH Private Key (Optional)</label>
-                    <textarea id="add-node-key" placeholder="-----BEGIN RSA PRIVATE KEY-----..." rows="3" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.2); color: white; resize: vertical; font-family: monospace;"></textarea>
+                    <textarea id="add-node-key" placeholder="-----BEGIN RSA PRIVATE KEY-----..." rows="3" class="mono"></textarea>
                 </div>
                 <div class="modal-actions">
-                    <button type="button" id="close-add-node-modal" class="btn btn-secondary">Cancel</button>
+                    <button type="button" data-action="close-modal" data-target="add-node-modal" id="close-add-node-modal" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Node</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
     <!-- Backup / Restore Modal -->
     <div id="backup-modal" class="modal-overlay" style="display: none;">
         <div class="glass-card modal-card" style="max-width: 500px;">
-            <h3>Backup & Restore</h3>
-            <p>Safely download or upload your panel's database.</p>
+            <h3>Backup & Database Restore</h3>
+            <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 15px;">Managepanel configuration state snapshots.</p>
             
-            <div style="margin-top: 20px; padding: 20px; background: rgba(0,0,0,0.2); border-radius: 8px;">
-                <h4>Download Backup</h4>
-                <p style="font-size: 0.9em; color: #ccc;">Download a complete `.sqlite` snapshot of your current settings, nodes, and tunnels.</p>
-                <button type="button" id="download-backup-btn" class="btn btn-primary" style="margin-top: 10px; width: 100%;">Download Now</button>
+            <div style="padding: 16px; background: rgba(2,6,23,0.5); border-radius: var(--radius-md); border: 1px solid var(--glass-border); margin-bottom: 16px;">
+                <h4 style="margin-bottom: 6px;">Download Snapshot</h4>
+                <p style="font-size: 0.85rem; color: var(--text-secondary);">Export a full `.sqlite` backup of your current tunnels and node credentials.</p>
+                <button type="button" data-action="download-backup" id="download-backup-btn" class="btn btn-primary" style="margin-top: 12px; width: 100%;">Download Database Backup</button>
             </div>
 
-            <div style="margin-top: 20px; padding: 20px; background: rgba(0,0,0,0.2); border-radius: 8px;">
-                <h4>Restore Backup</h4>
-                <p style="font-size: 0.9em; color: #ccc;">Upload a previously downloaded backup file to instantly restore your panel state.</p>
-                <form id="restore-form" style="margin-top: 10px;">
-                    <input type="file" id="restore-file" accept=".sqlite,.db" required style="margin-bottom: 15px; display: block; width: 100%; color: white;">
+            <div style="padding: 16px; background: rgba(2,6,23,0.5); border-radius: var(--radius-md); border: 1px solid var(--glass-border);">
+                <h4 style="margin-bottom: 6px;">Restore Snapshot</h4>
+                <p style="font-size: 0.85rem; color: var(--text-secondary);">Upload a previously downloaded `.sqlite` or `.db` file to restore panel state.</p>
+                <form id="restore-form" style="margin-top: 12px;">
+                    <input type="file" id="restore-file" accept=".sqlite,.db" required style="margin-bottom: 12px; display: block; width: 100%; color: var(--text-primary);">
                     <button type="submit" id="restore-submit-btn" class="btn btn-secondary" style="width: 100%;">Upload and Restore</button>
                 </form>
             </div>
 
-            <div class="modal-actions" style="margin-top: 20px;">
-                <button type="button" id="close-backup-modal" onclick="closeBackupModal()" class="btn btn-primary">Close</button>
+            <div class="modal-actions">
+                <button type="button" data-action="close-modal" data-target="backup-modal" id="close-backup-modal" class="btn btn-primary">Close</button>
             </div>
         </div>
     </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <!-- Telemetry Analytics Modal -->
     <div id="telemetry-chart-modal" class="modal-overlay" style="display: none;">
-        <div class="glass-card modal-card" style="max-width: 800px; width: 90%;">
+        <div class="glass-card modal-card" style="max-width: 820px; width: 90%;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                <h3 id="telemetry-chart-title">Tunnel Telemetry & Live Performance</h3>
-                <button type="button" id="close-telemetry-chart-modal-x" class="btn btn-secondary" style="padding: 4px 12px;">✕</button>
+                <h3 id="telemetry-chart-title">Tunnel Telemetry & Performance Analytics</h3>
+                <button type="button" data-action="close-modal" data-target="telemetry-chart-modal" id="close-telemetry-chart-modal-x" class="btn btn-secondary btn-small">✕</button>
             </div>
             <div style="display: flex; gap: 15px; margin-bottom: 15px;">
-                <div class="stat-box" style="flex: 1; padding: 10px 15px; background: rgba(0,0,0,0.3); border-radius: 8px;">
-                    <span style="font-size: 0.8em; color: #aaa;">CURRENT SPEED (RX / TX)</span>
-                    <div id="telemetry-modal-speed" style="font-weight: bold; color: #3b82f6; font-size: 1.1em; margin-top: 4px;">↓ 0 KB/s / ↑ 0 KB/s</div>
+                <div style="flex: 1; padding: 12px 16px; background: rgba(2,6,23,0.5); border-radius: var(--radius-md); border: 1px solid var(--glass-border);">
+                    <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Current Throughput</span>
+                    <div id="telemetry-modal-speed" style="font-weight: 700; color: var(--primary-blue); font-size: 1.1rem; margin-top: 4px;" class="mono">↓ 0 KB/s / ↑ 0 KB/s</div>
                 </div>
-                <div class="stat-box" style="flex: 1; padding: 10px 15px; background: rgba(0,0,0,0.3); border-radius: 8px;">
-                    <span style="font-size: 0.8em; color: #aaa;">ROUND TRIP LATENCY</span>
-                    <div id="telemetry-modal-ping" style="font-weight: bold; color: #a855f7; font-size: 1.1em; margin-top: 4px;">⚡ 0 ms</div>
+                <div style="flex: 1; padding: 12px 16px; background: rgba(2,6,23,0.5); border-radius: var(--radius-md); border: 1px solid var(--glass-border);">
+                    <span style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Round Trip Latency</span>
+                    <div id="telemetry-modal-ping" style="font-weight: 700; color: var(--accent-purple); font-size: 1.1rem; margin-top: 4px;" class="mono">⚡ 0 ms</div>
                 </div>
             </div>
-            <div style="position: relative; height: 320px; width: 100%; background: rgba(0,0,0,0.25); border-radius: 12px; padding: 15px;">
+            <div style="position: relative; height: 320px; width: 100%; background: rgba(2,6,23,0.4); border-radius: var(--radius-md); padding: 15px;">
                 <canvas id="telemetryChartCanvas"></canvas>
             </div>
-            <div class="modal-actions" style="margin-top: 15px;">
-                <button type="button" id="close-telemetry-chart-modal-btn" class="btn btn-primary">Close</button>
+            <div class="modal-actions">
+                <button type="button" data-action="close-modal" data-target="telemetry-chart-modal" id="close-telemetry-chart-modal-btn" class="btn btn-primary">Close</button>
             </div>
         </div>
     </div>
 
-    <script src="/app.js?v=1.21.1"></script>
+    <script src="/app.js?v=1.22.0"></script>
 </body>
 </html>
