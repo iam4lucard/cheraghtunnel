@@ -236,7 +236,7 @@ async function loadTunnels() {
                     const rxSpeed = formatBytes(t.stats_speed_rx || t.rx_speed || 0);
                     const txSpeed = formatBytes(t.stats_speed_tx || t.tx_speed || 0);
                     const pingMs = t.e2e_latency_ms;
-                    const pingText = pingMs !== null && pingMs !== undefined && pingMs > 0 ? `${Math.round(pingMs)} ms` : '—';
+                    const pingText = pingMs !== null && pingMs !== undefined && pingMs > 0 && pingMs < 999 ? `${Math.round(pingMs)} ms` : '—';
 
                     return `
                         <tr>
