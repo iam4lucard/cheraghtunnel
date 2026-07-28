@@ -1,4 +1,4 @@
-// CheraghTunnel API Module v1.26.0
+// CheraghTunnel API Module v1.27.0
 use axum::{
     routing::{get, post},
     Router, Json, Extension,
@@ -180,6 +180,7 @@ async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
 
                         let mut cur_rx = 0u64;
                         let mut cur_tx = 0u64;
+                        let mut measured_rtt: Option<f64> = None;
 
                         if let Ok(resp) = client.get(&url).send().await {
                             if let Ok(json) = resp.json::<serde_json::Value>().await {
@@ -188,21 +189,27 @@ async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
                                 cur_rx = json["speed_rx"].as_u64().unwrap_or(0);
                                 cur_tx = json["speed_tx"].as_u64().unwrap_or(0);
                                 
+                                let rtt_val = json["rtt_ms"].as_f64().unwrap_or(0.0);
+                                if rtt_val > 0.0 && rtt_val < 999.0 {
+                                    measured_rtt = Some(rtt_val);
+                                }
+                                
                                 let _ = db::update_tunnel_speeds(&db_path_clone, t.id.unwrap(), rx_delta, tx_delta, cur_rx, cur_tx);
                             }
                         }
 
-                        let node_ping = if let Some(k_id) = t.kharej_node_id {
-                            if let Ok(Some(k_node)) = db::get_node_by_id(&db_path_clone, k_id) {
-                                measure_tcp_ping(&k_node.host, k_node.port).await
-                            } else {
-                                None
+                        if measured_rtt.is_none() {
+                            if let Some(k_id) = t.kharej_node_id {
+                                if let Ok(Some(k_node)) = db::get_node_by_id(&db_path_clone, k_id) {
+                                    measured_rtt = measure_tcp_ping(&k_node.host, t.control_port).await;
+                                    if measured_rtt.is_none() {
+                                        measured_rtt = measure_tcp_ping(&k_node.host, t.kharej_port).await;
+                                    }
+                                }
                             }
-                        } else {
-                            None
-                        };
+                        }
 
-                        if let Some(rtt) = node_ping {
+                        if let Some(rtt) = measured_rtt {
                             let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt, 0.0, cur_rx, cur_tx);
                             let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "active", rtt);
                         } else {

@@ -35,7 +35,7 @@
         <header>
             <div class="logo-area">
                 <h2>Cheragh<span>Tunnel</span></h2>
-                <div class="badge">PRO v1.26</div>
+                <div class="badge">PRO v1.27</div>
             </div>
             <div class="user-profile">
                 <span>Administrator</span>
@@ -76,12 +76,20 @@
             </div>
 
             <div class="glass-card stat-box">
-                <h3>Total Traffic</h3>
-                <div class="stat-value" style="font-size: 1.15rem; font-family: var(--font-mono); font-weight: 700; line-height: 1.5;">
-                    <span style="color: #38bdf8;">↓ <span id="total-rx">0.0 MB</span></span><br>
-                    <span style="color: #f97316;">↑ <span id="total-tx">0.0 MB</span></span>
+                <h3>Network Traffic</h3>
+                <div class="stat-value" style="font-size: 0.95rem; font-family: var(--font-mono); font-weight: 700; line-height: 1.4;">
+                    <div style="margin-bottom: 4px;">
+                        <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-family: var(--font-sans);">Current Speed:</span><br>
+                        <span style="color: #38bdf8;">↓ <span id="total-speed-rx">0 KB/s</span></span>
+                        <span style="color: #f97316; margin-left: 6px;">↑ <span id="total-speed-tx">0 KB/s</span></span>
+                    </div>
+                    <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 4px;">
+                        <span style="color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; font-family: var(--font-sans);">Total Usage:</span><br>
+                        <span style="color: #38bdf8;">↓ <span id="total-rx">0.0 MB</span></span>
+                        <span style="color: #f97316; margin-left: 6px;">↑ <span id="total-tx">0.0 MB</span></span>
+                    </div>
                 </div>
-                <p style="color: var(--text-muted); font-size: 0.85rem;">Combined Network Throughput</p>
+                <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 4px;">Combined Network Activity</p>
             </div>
         </div>
 
@@ -577,6 +585,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.26.0"></script>
+    <script src="/app.js?v=1.27.0"></script>
 </body>
 </html>

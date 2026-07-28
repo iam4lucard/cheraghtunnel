@@ -205,11 +205,19 @@ async function loadTunnels() {
             const activeEl = document.getElementById('active-count');
             if (activeEl) activeEl.innerText = `${activeCount} / ${tunnels.length}`;
 
-            // Calculate Total Traffic across all tunnels
+            // Calculate Total Current Speeds and Cumulative Usage across all tunnels
+            const totalSpeedRxBytes = tunnels.reduce((acc, t) => acc + (t.stats_speed_rx || t.rx_speed || 0), 0);
+            const totalSpeedTxBytes = tunnels.reduce((acc, t) => acc + (t.stats_speed_tx || t.tx_speed || 0), 0);
             const totalRxBytes = tunnels.reduce((acc, t) => acc + (t.stats_rx || 0), 0);
             const totalTxBytes = tunnels.reduce((acc, t) => acc + (t.stats_tx || 0), 0);
+
+            const speedRxEl = document.getElementById('total-speed-rx');
+            const speedTxEl = document.getElementById('total-speed-tx');
             const rxEl = document.getElementById('total-rx');
             const txEl = document.getElementById('total-tx');
+
+            if (speedRxEl) speedRxEl.innerText = `${formatBytes(totalSpeedRxBytes)}/s`;
+            if (speedTxEl) speedTxEl.innerText = `${formatBytes(totalSpeedTxBytes)}/s`;
             if (rxEl) rxEl.innerText = formatBytes(totalRxBytes);
             if (txEl) txEl.innerText = formatBytes(totalTxBytes);
 
