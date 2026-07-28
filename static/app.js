@@ -8,29 +8,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Login Form Submit
     const loginForm = document.getElementById('login-form');
-    loginForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const username = loginForm.username.value;
-        const password = loginForm.password.value;
-        
-        try {
-            const res = await fetch('/api/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
-            });
-            const data = await res.json();
-            console.log('Login response:', data);
-            if (data.success) {
-                localStorage.setItem('cheragh_session', data.token);
-                showDashboard();
-            } else {
-                showLoginError(data.message);
+    if (loginForm) {
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const uInput = document.getElementById('username');
+            const pInput = document.getElementById('password');
+            const username = uInput ? uInput.value : '';
+            const password = pInput ? pInput.value : '';
+            
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                console.log('Login response:', data);
+                if (data.success) {
+                    localStorage.setItem('cheragh_session', data.token);
+                    showDashboard();
+                } else {
+                    showLoginError(data.message || "Invalid username or password");
+                }
+            } catch (err) {
+                console.error("Login catch error:", err);
+                showLoginError("Error connecting to server");
             }
-        } catch (err) {
-            showLoginError("Error connecting to server");
-        }
-    });
+        });
+    }
 
     // Logout
     document.getElementById('logout-btn').addEventListener('click', () => {
