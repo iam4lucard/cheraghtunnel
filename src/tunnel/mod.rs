@@ -233,8 +233,10 @@ pub async fn run_server(
                 let tracker = crate::tunnel::multiplex::get_traffic_tracker(tunnel_id);
                 if !pool.is_empty() {
                     let current_rtt = tracker.rtt_ms.load(std::sync::atomic::Ordering::Relaxed);
-                    if current_rtt == 0 || current_rtt == 999 {
-                        tracker.rtt_ms.store(45, std::sync::atomic::Ordering::Relaxed);
+                    // Only keep RTT if it's a valid measured value (not 0 or 999)
+                    // Don't set fake values — let the panel API's TCP ping fallback measure real RTT
+                    if current_rtt == 999 {
+                        tracker.rtt_ms.store(0, std::sync::atomic::Ordering::Relaxed);
                     }
                 } else {
                     tracker.rtt_ms.store(999, std::sync::atomic::Ordering::Relaxed);
