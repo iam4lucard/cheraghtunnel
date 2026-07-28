@@ -15,7 +15,7 @@
             <h2>Cheragh<span>Tunnel</span></h2>
             <p>Illuminate Your Connection</p>
         </div>
-        <form id="login-form">
+        <form id="login-form" onsubmit="handleLogin(event); return false;">
             <div class="form-group">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username" required placeholder="admin">
@@ -584,6 +584,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.20.6"></script>
+    <script src="/app.js?v=1.20.7"></script>
 </body>
 </html>

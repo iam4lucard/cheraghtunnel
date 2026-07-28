@@ -1,5 +1,35 @@
 const DECOY_PROTOCOLS = ['aura', 'nova', 'glimmer', 'beacon', 'mirage', 'spectre'];
-document.addEventListener('DOMContentLoaded', () => {
+
+async function handleLogin(e) {
+    if (e) e.preventDefault();
+    const uInput = document.getElementById('username');
+    const pInput = document.getElementById('password');
+    const username = uInput ? uInput.value : '';
+    const password = pInput ? pInput.value : '';
+    
+    try {
+        const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        console.log('Login response:', data);
+        if (data.success) {
+            localStorage.setItem('cheragh_session', data.token);
+            showDashboard();
+        } else {
+            showLoginError(data.message || "Invalid username or password");
+        }
+    } catch (err) {
+        console.error("Login catch error:", err);
+        showLoginError("Error connecting to server");
+    }
+    return false;
+}
+window.handleLogin = handleLogin;
+
+function initApp() {
     // Session Auth State check
     const token = localStorage.getItem('cheragh_session');
     if (token) {
@@ -9,32 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Login Form Submit
     const loginForm = document.getElementById('login-form');
     if (loginForm) {
-        loginForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const uInput = document.getElementById('username');
-            const pInput = document.getElementById('password');
-            const username = uInput ? uInput.value : '';
-            const password = pInput ? pInput.value : '';
-            
-            try {
-                const res = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                const data = await res.json();
-                console.log('Login response:', data);
-                if (data.success) {
-                    localStorage.setItem('cheragh_session', data.token);
-                    showDashboard();
-                } else {
-                    showLoginError(data.message || "Invalid username or password");
-                }
-            } catch (err) {
-                console.error("Login catch error:", err);
-                showLoginError("Error connecting to server");
-            }
-        });
+        loginForm.addEventListener('submit', handleLogin);
     }
 
     // Logout
@@ -253,9 +258,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('close-nodes-modal').addEventListener('click', () => {
         document.getElementById('nodes-modal').style.display = 'none';
     });
-
-
-});
 
 let wsInstance = null;
 
@@ -959,4 +961,12 @@ function toggleAccordion(header) {
     }
 }
 window.toggleAccordion = toggleAccordion;
+
+} // end initApp
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+} else {
+    initApp();
+}
 
