@@ -388,11 +388,13 @@ async function loadNodes() {
 
             const iranHtml = '<option value="" disabled selected>-- Select Iran Node --</option>';
             const kharejHtml = '<option value="" disabled selected>-- Select Kharej Node --</option>';
+            const editIranHtml = '<option value="">-- Main Server (Local) --</option>';
+            const editKharejHtml = '<option value="">-- Main Server (Local) --</option>';
 
             tIranSelect.innerHTML = iranHtml;
-            eIranSelect.innerHTML = iranHtml;
+            eIranSelect.innerHTML = editIranHtml;
             tKharejSelect.innerHTML = kharejHtml;
-            eKharejSelect.innerHTML = kharejHtml;
+            eKharejSelect.innerHTML = editKharejHtml;
 
             nodes.forEach(n => {
                 const tr = document.createElement('tr');
@@ -677,23 +679,27 @@ document.addEventListener('DOMContentLoaded', () => {
             stats_speed_tx: existing.stats_speed_tx || 0
         };
 
-        try {
-            const res = await apiFetch(`/api/tunnels/${id}`, {
-                method: 'PUT',
-                body: JSON.stringify(payload)
-            });
-            if (res && res.ok) {
-                editModal.style.display = 'none';
-                loadTunnels();
-            } else if (res) {
-                const errMsg = await res.text();
-                alert(errMsg || "Failed to update tunnel configuration");
+            try {
+                const res = await apiFetch(`/api/tunnels/${id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(payload)
+                });
+                if (res && res.ok) {
+                    editModal.style.display = 'none';
+                    await loadTunnels();
+                    alert("✅ Tunnel configuration saved successfully!");
+                } else if (res) {
+                    const errMsg = await res.text();
+                    alert("❌ Error saving tunnel: " + (errMsg || "Unknown server error"));
+                } else {
+                    alert("❌ Network error: Could not reach panel server");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("❌ Error: " + err.message);
             }
-        } catch (err) {
-            console.error(err);
-        }
+        });
     });
-});
 
 const PROTOCOL_OPTIONS_SCHEMA = {
     "photon": [

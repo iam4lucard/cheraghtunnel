@@ -549,7 +549,7 @@ async fn update_tunnel_handler(
     }
 
     match db::update_tunnel(&state.db_path, id, &final_tunnel) {
-        Ok(_) => {
+        Ok(true) => {
             if was_active {
                 let state_clone = state.clone();
                 tokio::spawn(async move {
@@ -577,6 +577,7 @@ async fn update_tunnel_handler(
             }
             StatusCode::OK.into_response()
         }
+        Ok(false) => (StatusCode::NOT_FOUND, "Tunnel ID not found in database").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

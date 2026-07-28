@@ -354,9 +354,9 @@ pub fn set_setting(db_path: &Path, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
+pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<bool> {
     let conn = get_db_conn(db_path)?;
-    conn.execute(
+    let count = conn.execute(
         "UPDATE tunnels 
          SET name = ?1, protocol = ?2, iran_port = ?3, kharej_port = ?4, control_port = ?5, 
              token = ?6, decoy_url = ?7, backup_ips = ?8, transport_options = ?9,
@@ -382,7 +382,7 @@ pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<()> {
             id,
         ],
     )?;
-    Ok(())
+    Ok(count > 0)
 }
 
 /// Hash a password using SHA-256 and return the hex-encoded digest.
