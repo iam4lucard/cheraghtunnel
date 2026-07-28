@@ -35,7 +35,7 @@
         <header>
             <div class="logo-area">
                 <h2>Cheragh<span>Tunnel</span></h2>
-                <div class="badge">PRO v1.22</div>
+                <div class="badge">PRO v1.25</div>
             </div>
             <div class="user-profile">
                 <span>Administrator</span>
@@ -73,6 +73,15 @@
                 <h3>Active Tunnels</h3>
                 <div class="stat-value" id="active-count">0 / 0</div>
                 <p style="color: var(--text-muted); font-size: 0.85rem;">Active Established Tunnels</p>
+            </div>
+
+            <div class="glass-card stat-box">
+                <h3>Total Traffic</h3>
+                <div class="stat-value" style="font-size: 1.15rem; font-family: var(--font-mono); font-weight: 700; line-height: 1.5;">
+                    <span style="color: #38bdf8;">↓ <span id="total-rx">0.0 MB</span></span><br>
+                    <span style="color: #f97316;">↑ <span id="total-tx">0.0 MB</span></span>
+                </div>
+                <p style="color: var(--text-muted); font-size: 0.85rem;">Combined Network Throughput</p>
             </div>
         </div>
 
@@ -568,6 +577,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.24.0"></script>
+    <script src="/app.js?v=1.25.0"></script>
 </body>
 </html>
