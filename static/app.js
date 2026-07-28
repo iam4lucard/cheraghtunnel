@@ -704,7 +704,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert("❌ Error: " + err.message);
             }
         });
-    });
+    }
+});
 
 const PROTOCOL_OPTIONS_SCHEMA = {
     "photon": [
