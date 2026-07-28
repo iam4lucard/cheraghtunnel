@@ -1,4 +1,4 @@
-// CheraghTunnel API Module v1.29.0
+// CheraghTunnel API Module v1.30.0
 use axum::{
     routing::{get, post},
     Router, Json, Extension,
@@ -220,10 +220,9 @@ async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
                             let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), rtt, 0.0, cur_rx, cur_tx);
                             let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "active", rtt);
                         } else if api_responded || cur_rx > 0 || cur_tx > 0 || t.stats_speed_rx > 0 || t.stats_speed_tx > 0 {
-                            // Tunnel is alive (API responded or has traffic) but ping measurement failed
-                            let estimated_rtt = if api_responded { 45.0 } else { 0.0 };
-                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), estimated_rtt, 0.0, cur_rx, cur_tx);
-                            let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "active", estimated_rtt);
+                            // Tunnel is alive (API responded or has traffic) but ping measurement failed — use 0 so UI shows "—"
+                            let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), 0.0, 0.0, cur_rx, cur_tx);
+                            let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "active", 0.0);
                         } else {
                             let _ = db::log_telemetry(&db_path_clone, t.id.unwrap(), 999.0, 100.0, 0, 0);
                             let _ = db::update_tunnel_probe(&db_path_clone, t.id.unwrap(), "unreachable", 999.0);
