@@ -148,17 +148,28 @@ async function loadNodes() {
             `).join('');
         }
 
-        // Populate Dropdowns
+        // Populate Dropdowns for both Create and Edit modals
         const iranSelects = [document.getElementById('tunnel-iran-select'), document.getElementById('edit-tunnel-iran-select')];
         const kharejSelects = [document.getElementById('tunnel-kharej-select'), document.getElementById('edit-tunnel-kharej-select')];
 
-        const iranOptions = nodes.filter(n => n.role === 'iran' || n.role === 'both')
-            .map(n => `<option value="${n.id}">${escapeHtml(n.name)} (${escapeHtml(n.host)})</option>`).join('');
-        const kharejOptions = nodes.filter(n => n.role === 'kharej' || n.role === 'both')
-            .map(n => `<option value="${n.id}">${escapeHtml(n.name)} (${escapeHtml(n.host)})</option>`).join('');
+        const allNodeOptions = nodes.map(n => 
+            `<option value="${n.id}">${escapeHtml(n.name)} (${escapeHtml(n.host)})</option>`
+        ).join('');
 
-        iranSelects.forEach(s => { if (s) s.innerHTML = iranOptions || '<option value="">No Iran Nodes</option>'; });
-        kharejSelects.forEach(s => { if (s) s.innerHTML = kharejOptions || '<option value="">No Kharej Nodes</option>'; });
+        iranSelects.forEach(s => { 
+            if (s) {
+                const curVal = s.value;
+                s.innerHTML = allNodeOptions || '<option value="">No Nodes Configured</option>';
+                if (curVal) s.value = curVal;
+            }
+        });
+        kharejSelects.forEach(s => { 
+            if (s) {
+                const curVal = s.value;
+                s.innerHTML = allNodeOptions || '<option value="">No Nodes Configured</option>';
+                if (curVal) s.value = curVal;
+            }
+        });
     } catch (err) {
         console.error("Error loading nodes:", err);
     }
@@ -225,18 +236,36 @@ async function loadTunnels() {
             if (!tbody) return;
 
             if (tunnels.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 30px;">No tunnels configured yet. Click <strong>+ Create Tunnel</strong> to set up your first tunnel.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 30px;">No tunnels configured yet. Click <strong>+ Create Tunnel</strong> to set up your first tunnel.</td></tr>`;
             } else {
                 tbody.innerHTML = tunnels.map(t => {
-                    const isRunning = t.status === 'active' || t.status === 'running';
-                    const isPaused = t.status === 'paused';
-                    const badgeClass = isRunning ? 'active' : (isPaused ? 'paused' : 'stopped');
-                    const badgeText = isRunning ? 'Active' : (isPaused ? 'Paused' : 'Stopped');
-                    
+                    const isPending = pendingTunnels[t.id];
+                    const isDeploying = t.status === 'deploying' || isPending;
+                    const isRunning = (t.status === 'active' || t.status === 'running') && !isDeploying;
+                    const isPaused = t.status === 'paused' && !isDeploying;
+                    const isError = t.status === 'error' && !isDeploying;
+
+                    let badgeClass = 'stopped';
+                    let badgeText = 'Stopped';
+                    if (isDeploying) {
+                        badgeClass = 'deploying';
+                        badgeText = 'Deploying...';
+                    } else if (isRunning) {
+                        badgeClass = 'active';
+                        badgeText = 'Active';
+                    } else if (isPaused) {
+                        badgeClass = 'paused';
+                        badgeText = 'Paused';
+                    } else if (isError) {
+                        badgeClass = 'stopped';
+                        badgeText = 'Error';
+                    }
+
                     const rxSpeed = formatBytes(t.stats_speed_rx || t.rx_speed || 0);
                     const txSpeed = formatBytes(t.stats_speed_tx || t.tx_speed || 0);
-                    const pingMs = t.e2e_latency_ms;
-                    const pingText = pingMs !== null && pingMs !== undefined && pingMs > 0 && pingMs < 999 ? `${Math.round(pingMs)} ms` : '—';
+
+                    const toggleBtnText = isDeploying ? '⌛ Deploying...' : (isRunning ? '⏸ Pause' : '▶ Start');
+                    const toggleDisabled = isDeploying ? 'disabled style="opacity: 0.6; cursor: not-allowed;"' : '';
 
                     return `
                         <tr>
@@ -250,12 +279,11 @@ async function loadTunnels() {
                                     <span class="status-dot"></span>${badgeText}
                                 </span>
                             </td>
-                            <td class="mono">${pingText}</td>
                             <td class="mono">↓ ${rxSpeed}/s <br> ↑ ${txSpeed}/s</td>
                             <td>
                                 <div class="action-buttons">
-                                    <button type="button" class="action-btn" data-action="toggle-tunnel" data-id="${t.id}">
-                                        ${isRunning ? '⏸ Pause' : '▶ Start'}
+                                    <button type="button" class="action-btn" data-action="toggle-tunnel" data-id="${t.id}" ${toggleDisabled}>
+                                        ${toggleBtnText}
                                     </button>
                                     <button type="button" class="action-btn" data-action="edit-tunnel" data-id="${t.id}">✏️ Edit</button>
                                     <button type="button" class="action-btn" data-action="show-telemetry" data-id="${t.id}">📈 Chart</button>
@@ -272,6 +300,8 @@ async function loadTunnels() {
     }
 }
 
+const pendingTunnels = {};
+
 function startStatsPolling() {
     if (statsInterval) clearInterval(statsInterval);
     statsInterval = setInterval(loadTunnels, 3000);
@@ -280,14 +310,19 @@ function startStatsPolling() {
 // Tunnel Operations
 async function toggleTunnel(id) {
     const token = getSessionToken();
+    pendingTunnels[id] = true;
+    loadTunnels(); // Show 'Deploying...' state immediately
+
     try {
         await fetch(`/api/tunnels/${id}/toggle`, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}` }
         });
-        loadTunnels();
     } catch (err) {
         console.error("Error toggling tunnel:", err);
+    } finally {
+        delete pendingTunnels[id];
+        loadTunnels();
     }
 }
 
@@ -322,6 +357,8 @@ async function deleteNode(id) {
 async function showEditModal(id) {
     const token = getSessionToken();
     try {
+        await loadNodes();
+
         const res = await fetch(`/api/tunnels/${id}`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -331,8 +368,11 @@ async function showEditModal(id) {
         document.getElementById('edit-tunnel-id').value = t.id;
         document.getElementById('edit-tunnel-name').value = t.name || '';
         document.getElementById('edit-tunnel-protocol').value = t.protocol || 'nova';
-        document.getElementById('edit-tunnel-iran-select').value = t.iran_node_id || '';
-        document.getElementById('edit-tunnel-kharej-select').value = t.kharej_node_id || '';
+
+        const iranSelect = document.getElementById('edit-tunnel-iran-select');
+        const kharejSelect = document.getElementById('edit-tunnel-kharej-select');
+        if (iranSelect) iranSelect.value = t.iran_node_id !== null && t.iran_node_id !== undefined ? String(t.iran_node_id) : '';
+        if (kharejSelect) kharejSelect.value = t.kharej_node_id !== null && t.kharej_node_id !== undefined ? String(t.kharej_node_id) : '';
         document.getElementById('edit-iran-port').value = t.iran_port || '';
         document.getElementById('edit-control-port').value = t.control_port || '';
         document.getElementById('edit-kharej-port').value = t.kharej_port || '';
