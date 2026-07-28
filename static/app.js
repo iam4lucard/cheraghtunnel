@@ -604,6 +604,37 @@ window.deleteNode = deleteNode;
 window.showEditModal = showEditModal;
 window.showTelemetry = showTelemetry;
 
+window.openNodesModal = function() {
+    loadNodes();
+    document.getElementById('nodes-modal').style.display = 'flex';
+};
+window.closeNodesModal = function() {
+    document.getElementById('nodes-modal').style.display = 'none';
+};
+window.openBackupModal = function() {
+    document.getElementById('backup-modal').style.display = 'flex';
+};
+window.closeBackupModal = function() {
+    document.getElementById('backup-modal').style.display = 'none';
+};
+window.openCreateModal = function() {
+    const tokenInput = document.getElementById('tunnel-token');
+    if (tokenInput) {
+        tokenInput.value = Math.random().toString(36).substring(2, 12).toUpperCase();
+    }
+    document.getElementById('create-modal').style.display = 'flex';
+};
+window.closeCreateModal = function() {
+    document.getElementById('create-modal').style.display = 'none';
+};
+window.closeEditModal = function() {
+    document.getElementById('edit-modal').style.display = 'none';
+};
+window.handleLogout = function() {
+    localStorage.removeItem('cheragh_session');
+    window.location.reload();
+};
+
 
 // Edit form submit & token helpers
 document.addEventListener('DOMContentLoaded', () => {

@@ -39,9 +39,9 @@
             </div>
             <div class="user-profile">
                 <span>Admin</span>
-                <button id="manage-nodes-btn" class="btn btn-primary" style="margin-right: 10px;">Manage Nodes</button>
-                <button id="open-backup-modal-btn" class="btn btn-primary" style="margin-right: 10px;">Backup / Restore</button>
-                <button id="logout-btn" class="btn btn-secondary">Logout</button>
+                <button id="manage-nodes-btn" onclick="openNodesModal()" class="btn btn-primary" style="margin-right: 10px;">Manage Nodes</button>
+                <button id="open-backup-modal-btn" onclick="openBackupModal()" class="btn btn-primary" style="margin-right: 10px;">Backup / Restore</button>
+                <button id="logout-btn" onclick="handleLogout()" class="btn btn-secondary">Logout</button>
             </div>
         </header>
 
@@ -82,7 +82,7 @@
             <section class="tunnels-list-section glass-card">
                 <div class="section-header">
                     <h3>Tunnel Configurations</h3>
-                    <button id="open-create-modal" class="btn btn-primary">Create Tunnel</button>
+                    <button id="open-create-modal" onclick="openCreateModal()" class="btn btn-primary">Create Tunnel</button>
                 </div>
                 <div class="table-container">
                     <table>
@@ -275,7 +275,7 @@
                 </div>
 
                 <div class="modal-actions">
-                    <button type="button" id="close-create-modal" class="btn btn-secondary">Cancel</button>
+                    <button type="button" id="close-create-modal" onclick="closeCreateModal()" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create Tunnel</button>
                 </div>
             </form>
@@ -442,7 +442,7 @@
                 </div>
 
                 <div class="modal-actions">
-                    <button type="button" id="close-edit-modal" class="btn btn-secondary">Cancel</button>
+                    <button type="button" id="close-edit-modal" onclick="closeEditModal()" class="btn btn-secondary">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                 </div>
             </form>
@@ -474,7 +474,7 @@
                 </table>
             </div>
             <div class="modal-actions" style="margin-top: 20px;">
-                <button type="button" id="close-nodes-modal" class="btn btn-primary">Close</button>
+                <button type="button" id="close-nodes-modal" onclick="closeNodesModal()" class="btn btn-primary">Close</button>
             </div>
         </div>
     </div>
@@ -553,7 +553,7 @@
             </div>
 
             <div class="modal-actions" style="margin-top: 20px;">
-                <button type="button" id="close-backup-modal" class="btn btn-primary">Close</button>
+                <button type="button" id="close-backup-modal" onclick="closeBackupModal()" class="btn btn-primary">Close</button>
             </div>
         </div>
     </div>
@@ -584,6 +584,6 @@
         </div>
     </div>
 
-    <script src="/app.js?v=1.20.8"></script>
+    <script src="/app.js?v=1.20.9"></script>
 </body>
 </html>
