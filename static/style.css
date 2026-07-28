@@ -443,6 +443,18 @@ tr:hover td {
     border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
+.status-badge.deploying {
+    background: rgba(56, 189, 248, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    animation: pulseBadge 1.2s infinite alternate;
+}
+
+@keyframes pulseBadge {
+    0% { opacity: 0.6; }
+    100% { opacity: 1; }
+}
+
 .status-dot {
     width: 6px;
     height: 6px;
