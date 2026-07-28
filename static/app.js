@@ -164,73 +164,89 @@ async function loadTunnels() {
     if (!token) return;
 
     try {
-        const res = await fetch('/api/status', {
+        // Fetch System CPU and RAM Stats
+        const statsRes = await fetch('/api/stats', {
             headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (res.status === 401) {
+        if (statsRes.status === 401) {
             handleLogout();
             return;
         }
-        if (!res.ok) return;
-
-        const data = await res.json();
-        
-        // System stats update
-        if (data.cpu_usage !== undefined) {
-            document.getElementById('cpu-text').innerText = `${Math.round(data.cpu_usage)}%`;
-            document.getElementById('cpu-circle').setAttribute('stroke-dasharray', `${Math.round(data.cpu_usage)}, 100`);
+        if (statsRes.ok) {
+            const stats = await statsRes.json();
+            if (stats.cpu_usage !== undefined) {
+                const cpu = Math.round(stats.cpu_usage);
+                const cpuText = document.getElementById('cpu-text');
+                const cpuCircle = document.getElementById('cpu-circle');
+                if (cpuText) cpuText.innerText = `${cpu}%`;
+                if (cpuCircle) cpuCircle.setAttribute('stroke-dasharray', `${cpu}, 100`);
+            }
+            if (stats.mem_usage !== undefined) {
+                const ram = Math.round(stats.mem_usage);
+                const ramText = document.getElementById('ram-text');
+                const ramCircle = document.getElementById('ram-circle');
+                if (ramText) ramText.innerText = `${ram}%`;
+                if (ramCircle) ramCircle.setAttribute('stroke-dasharray', `${ram}, 100`);
+            }
         }
-        if (data.ram_usage !== undefined) {
-            document.getElementById('ram-text').innerText = `${Math.round(data.ram_usage)}%`;
-            document.getElementById('ram-circle').setAttribute('stroke-dasharray', `${Math.round(data.ram_usage)}, 100`);
+
+        // Fetch Tunnels List
+        const tunnelsRes = await fetch('/api/tunnels', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (tunnelsRes.ok) {
+            const tunnels = await tunnelsRes.json();
+            const activeCount = tunnels.filter(t => t.status === 'active' || t.status === 'running').length;
+            const activeEl = document.getElementById('active-count');
+            if (activeEl) activeEl.innerText = `${activeCount} / ${tunnels.length}`;
+
+            const tbody = document.getElementById('tunnels-body');
+            if (!tbody) return;
+
+            if (tunnels.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 30px;">No tunnels configured yet. Click <strong>+ Create Tunnel</strong> to set up your first tunnel.</td></tr>`;
+            } else {
+                tbody.innerHTML = tunnels.map(t => {
+                    const isRunning = t.status === 'active' || t.status === 'running';
+                    const isPaused = t.status === 'paused';
+                    const badgeClass = isRunning ? 'active' : (isPaused ? 'paused' : 'stopped');
+                    const badgeText = isRunning ? 'Active' : (isPaused ? 'Paused' : 'Stopped');
+                    
+                    const rxSpeed = formatBytes(t.rx_speed || 0);
+                    const txSpeed = formatBytes(t.tx_speed || 0);
+                    const pingText = t.rtt_ms !== undefined && t.rtt_ms > 0 ? `${t.rtt_ms} ms` : '—';
+
+                    return `
+                        <tr>
+                            <td><strong>${escapeHtml(t.name)}</strong></td>
+                            <td><span class="mono" style="color: var(--accent-purple); font-weight: 600;">${escapeHtml(t.protocol.toUpperCase())}</span></td>
+                            <td class="mono">${t.iran_port}</td>
+                            <td class="mono">${t.control_port}</td>
+                            <td class="mono">${t.kharej_port}</td>
+                            <td>
+                                <span class="status-badge ${badgeClass}">
+                                    <span class="status-dot"></span>${badgeText}
+                                </span>
+                            </td>
+                            <td class="mono">${pingText}</td>
+                            <td class="mono">↓ ${rxSpeed}/s <br> ↑ ${txSpeed}/s</td>
+                            <td>
+                                <div class="action-buttons">
+                                    <button type="button" class="action-btn" data-action="toggle-tunnel" data-id="${t.id}">
+                                        ${isRunning ? '⏸ Pause' : '▶ Start'}
+                                    </button>
+                                    <button type="button" class="action-btn" data-action="edit-tunnel" data-id="${t.id}">✏️ Edit</button>
+                                    <button type="button" class="action-btn" data-action="show-telemetry" data-id="${t.id}">📈 Chart</button>
+                                    <button type="button" class="action-btn delete" data-action="delete-tunnel" data-id="${t.id}">🗑️</button>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
         }
-
-        const tunnels = data.tunnels || [];
-        const activeCount = tunnels.filter(t => t.status === 'active' || t.status === 'running').length;
-        document.getElementById('active-count').innerText = `${activeCount} / ${tunnels.length}`;
-
-        const tbody = document.getElementById('tunnels-body');
-        if (!tbody) return;
-
-        tbody.innerHTML = tunnels.map(t => {
-            const isRunning = t.status === 'active' || t.status === 'running';
-            const isPaused = t.status === 'paused';
-            const badgeClass = isRunning ? 'active' : (isPaused ? 'paused' : 'stopped');
-            const badgeText = isRunning ? 'Active' : (isPaused ? 'Paused' : 'Stopped');
-            
-            const rxSpeed = formatBytes(t.rx_speed || 0);
-            const txSpeed = formatBytes(t.tx_speed || 0);
-            const pingText = t.rtt_ms !== undefined && t.rtt_ms > 0 ? `${t.rtt_ms} ms` : '—';
-
-            return `
-                <tr>
-                    <td><strong>${escapeHtml(t.name)}</strong></td>
-                    <td><span class="mono">${escapeHtml(t.protocol.toUpperCase())}</span></td>
-                    <td class="mono">${t.iran_port}</td>
-                    <td class="mono">${t.control_port}</td>
-                    <td class="mono">${t.kharej_port}</td>
-                    <td>
-                        <span class="status-badge ${badgeClass}">
-                            <span class="status-dot"></span>${badgeText}
-                        </span>
-                    </td>
-                    <td class="mono">${pingText}</td>
-                    <td class="mono">↓ ${rxSpeed}/s <br> ↑ ${txSpeed}/s</td>
-                    <td>
-                        <div class="action-buttons">
-                            <button type="button" class="action-btn" data-action="toggle-tunnel" data-id="${t.id}">
-                                ${isRunning ? '⏸ Pause' : '▶ Start'}
-                            </button>
-                            <button type="button" class="action-btn" data-action="edit-tunnel" data-id="${t.id}">✏️ Edit</button>
-                            <button type="button" class="action-btn" data-action="show-telemetry" data-id="${t.id}">📈 Chart</button>
-                            <button type="button" class="action-btn delete" data-action="delete-tunnel" data-id="${t.id}">🗑️</button>
-                        </div>
-                    </td>
-                </tr>
-            `;
-        }).join('');
     } catch (err) {
-        console.error("Error loading tunnels:", err);
+        console.error("Error loading dashboard tunnels and stats:", err);
     }
 }
 

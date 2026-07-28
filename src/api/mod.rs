@@ -1,4 +1,4 @@
-// CheraghTunnel API Module v1.23.0
+// CheraghTunnel API Module v1.23.1
 use axum::{
     routing::{get, post},
     Router, Json, Extension,
@@ -278,6 +278,7 @@ async fn measure_tcp_ping(host: &str, port: u16) -> Option<f64> {
         .route("/api/tunnels/:id/toggle", post(toggle_tunnel_handler))
         .route("/api/tunnels/:id/telemetry", get(telemetry_handler))
         .route("/api/stats", get(stats_handler))
+        .route("/api/status", get(stats_handler))
         .route("/api/nodes", get(get_nodes_handler).post(create_node_handler))
         .route("/api/nodes/:id", axum::routing::delete(delete_node_handler))
         .route("/api/backup", get(backup_handler))
