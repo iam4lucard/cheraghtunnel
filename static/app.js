@@ -250,7 +250,6 @@ async function loadTunnels() {
                                     <span class="status-dot"></span>${badgeText}
                                 </span>
                             </td>
-                            <td class="mono">${pingText}</td>
                             <td class="mono">↓ ${rxSpeed}/s <br> ↑ ${txSpeed}/s</td>
                             <td>
                                 <div class="action-buttons">
