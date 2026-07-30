@@ -5,12 +5,14 @@ use crate::common::network::optimize_socket;
 
 /// Multi-Path Tunnel Bonding Pool
 /// Manages multiple redundant transport channels to aggregate bandwidth and provide seamless failover.
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct MultiPathBondingPool {
     active_index: Arc<AtomicUsize>,
     channel_count: usize,
 }
 
+#[allow(dead_code)]
 impl MultiPathBondingPool {
     pub fn new(channel_count: usize) -> Self {
         Self {

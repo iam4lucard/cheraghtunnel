@@ -142,6 +142,7 @@ async function loadNodes() {
                     <td class="mono">${n.port}</td>
                     <td class="mono">${escapeHtml(n.username)}</td>
                     <td>
+                        <button type="button" class="action-btn" data-action="edit-node" data-id="${n.id}">✏️ Edit</button>
                         <button type="button" class="action-btn delete" data-action="delete-node" data-id="${n.id}">Delete</button>
                     </td>
                 </tr>
@@ -228,10 +229,14 @@ async function loadTunnels() {
                 tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 30px;">No tunnels configured yet. Click <strong>+ Create Tunnel</strong> to set up your first tunnel.</td></tr>`;
             } else {
                 tbody.innerHTML = tunnels.map(t => {
+                    const isDeploying = t.status === 'deploying';
                     const isRunning = t.status === 'active' || t.status === 'running';
                     const isPaused = t.status === 'paused';
-                    const badgeClass = isRunning ? 'active' : (isPaused ? 'paused' : 'stopped');
-                    const badgeText = isRunning ? 'Active' : (isPaused ? 'Paused' : 'Stopped');
+
+                    const badgeClass = isDeploying ? 'deploying' : (isRunning ? 'active' : (isPaused ? 'paused' : 'stopped'));
+                    const badgeText = isDeploying ? 'Deploying...' : (isRunning ? 'Active' : (isPaused ? 'Paused' : 'Stopped'));
+                    const toggleText = isDeploying ? '⌛ Deploying...' : (isRunning ? '⏸ Pause' : '▶ Start');
+                    const isBtnDisabled = isDeploying ? 'disabled' : '';
                     
                     const rxSpeed = formatBytes(t.stats_speed_rx || t.rx_speed || 0);
                     const txSpeed = formatBytes(t.stats_speed_tx || t.tx_speed || 0);
@@ -250,12 +255,11 @@ async function loadTunnels() {
                                     <span class="status-dot"></span>${badgeText}
                                 </span>
                             </td>
-                            <td class="mono">${pingText}</td>
                             <td class="mono">↓ ${rxSpeed}/s <br> ↑ ${txSpeed}/s</td>
                             <td>
                                 <div class="action-buttons">
-                                    <button type="button" class="action-btn" data-action="toggle-tunnel" data-id="${t.id}">
-                                        ${isRunning ? '⏸ Pause' : '▶ Start'}
+                                    <button type="button" class="action-btn" data-action="toggle-tunnel" data-id="${t.id}" ${isBtnDisabled}>
+                                        ${toggleText}
                                     </button>
                                     <button type="button" class="action-btn" data-action="edit-tunnel" data-id="${t.id}">✏️ Edit</button>
                                     <button type="button" class="action-btn" data-action="show-telemetry" data-id="${t.id}">📈 Chart</button>
@@ -302,6 +306,30 @@ async function deleteTunnel(id) {
         loadTunnels();
     } catch (err) {
         console.error("Error deleting tunnel:", err);
+    }
+}
+
+async function showEditNodeModal(id) {
+    const token = getSessionToken();
+    try {
+        const res = await fetch(`/api/nodes/${id}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) return;
+        const n = await res.json();
+
+        document.getElementById('edit-node-id').value = n.id;
+        document.getElementById('edit-node-name').value = n.name || '';
+        document.getElementById('edit-node-role').value = n.role || 'iran';
+        document.getElementById('edit-node-host').value = n.host || '';
+        document.getElementById('edit-node-port').value = n.port || 22;
+        document.getElementById('edit-node-user').value = n.username || 'root';
+        document.getElementById('edit-node-pass').value = '';
+        document.getElementById('edit-node-key').value = n.private_key || '';
+
+        openModal('edit-node-modal');
+    } catch (err) {
+        console.error("Error fetching node for edit:", err);
     }
 }
 
@@ -472,6 +500,9 @@ document.addEventListener('click', (e) => {
             break;
         case 'delete-tunnel':
             if (id) deleteTunnel(id);
+            break;
+        case 'edit-node':
+            if (id) showEditNodeModal(id);
             break;
         case 'delete-node':
             if (id) deleteNode(id);
@@ -661,6 +692,43 @@ document.addEventListener('submit', async (e) => {
             }
         } catch (err) {
             console.error("Add node failed:", err);
+        }
+    }
+
+    if (form.id === 'edit-node-form') {
+        e.preventDefault();
+        const id = document.getElementById('edit-node-id').value;
+        const passVal = document.getElementById('edit-node-pass').value;
+        const keyVal = document.getElementById('edit-node-key').value;
+
+        const body = {
+            name: document.getElementById('edit-node-name').value,
+            role: document.getElementById('edit-node-role').value,
+            host: document.getElementById('edit-node-host').value,
+            port: parseInt(document.getElementById('edit-node-port').value) || 22,
+            username: document.getElementById('edit-node-user').value,
+            password: passVal ? passVal : undefined,
+            private_key: keyVal ? keyVal : undefined
+        };
+
+        try {
+            const res = await fetch(`/api/nodes/${id}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(body)
+            });
+            if (res.ok) {
+                closeModal('edit-node-modal');
+                form.reset();
+                loadNodes();
+            } else {
+                alert("Failed to update remote node.");
+            }
+        } catch (err) {
+            console.error("Edit node failed:", err);
         }
     }
 

@@ -71,6 +71,7 @@ pub fn bind_listener(addr: std::net::SocketAddr) -> io::Result<TcpListener> {
 }
 
 /// Clamps TCP Maximum Segment Size (MSS) based on target Path MTU to prevent packet fragmentation.
+#[allow(dead_code)]
 pub fn set_tcp_mss_clamp(stream: &TcpStream, mss: u32) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -93,6 +94,7 @@ pub fn set_tcp_mss_clamp(stream: &TcpStream, mss: u32) -> io::Result<()> {
 }
 
 /// Applies eBPF / BPF socket filter for kernel fast-path redirection on Linux.
+#[allow(dead_code)]
 pub fn enable_ebpf_fastpath(stream: &TcpStream) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -115,6 +117,7 @@ pub fn enable_ebpf_fastpath(stream: &TcpStream) -> io::Result<()> {
 }
 
 /// Probes optimal MTU size dynamically (defaults to 1380 for loss-resistant tunneling).
+#[allow(dead_code)]
 pub fn detect_optimal_mtu() -> u32 {
     1380
 }

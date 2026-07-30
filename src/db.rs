@@ -441,6 +441,7 @@ pub fn log_telemetry(db_path: &Path, tunnel_id: i64, rtt_ms: f64, packet_loss: f
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn get_recent_telemetry(db_path: &Path, tunnel_id: i64, limit: usize) -> Result<Vec<(f64, f64, i64)>> {
     let conn = get_db_conn(db_path)?;
     let mut stmt = conn.prepare(
@@ -566,6 +567,25 @@ pub fn update_node_health(db_path: &Path, id: i64, status: &str, latency_ms: f64
         params![status, latency_ms, id],
     )?;
     Ok(())
+}
+
+pub fn update_node(db_path: &Path, id: i64, node: &Node) -> Result<bool> {
+    let conn = get_db_conn(db_path)?;
+    let count = conn.execute(
+        "UPDATE nodes SET name = ?1, host = ?2, port = ?3, username = ?4, password = ?5, private_key = ?6, role = ?7, is_backup = ?8 WHERE id = ?9",
+        params![
+            node.name,
+            node.host,
+            node.port,
+            node.username,
+            node.password,
+            node.private_key,
+            node.role,
+            node.is_backup.unwrap_or(0),
+            id,
+        ],
+    )?;
+    Ok(count > 0)
 }
 
 pub fn delete_node(db_path: &Path, id: i64) -> Result<()> {
