@@ -232,9 +232,10 @@ async function loadTunnels() {
                     const isDeploying = t.status === 'deploying';
                     const isRunning = t.status === 'active' || t.status === 'running';
                     const isPaused = t.status === 'paused';
+                    const isError = t.status === 'error';
 
-                    const badgeClass = isDeploying ? 'deploying' : (isRunning ? 'active' : (isPaused ? 'paused' : 'stopped'));
-                    const badgeText = isDeploying ? 'Deploying...' : (isRunning ? 'Active' : (isPaused ? 'Paused' : 'Stopped'));
+                    const badgeClass = isDeploying ? 'deploying' : (isRunning ? 'active' : (isError ? 'error' : (isPaused ? 'paused' : 'stopped')));
+                    const badgeText = isDeploying ? 'Deploying...' : (isRunning ? 'Active' : (isError ? 'Error' : (isPaused ? 'Paused' : 'Stopped')));
                     const toggleText = isDeploying ? '⌛ Deploying...' : (isRunning ? '⏸ Pause' : '▶ Start');
                     const isBtnDisabled = isDeploying ? 'disabled' : '';
                     
