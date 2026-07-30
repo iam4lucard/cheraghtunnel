@@ -137,6 +137,10 @@ pub async fn run_panel(
                             }
                         }
                         let quota_limit = t.quota_limit_bytes.unwrap_or(0);
+                        if t.status == "deploying" {
+                            continue;
+                        }
+
                         let quota_used = t.quota_used_bytes.unwrap_or(0);
                         if quota_limit > 0 && quota_used >= quota_limit {
                             println!("[PANEL] Tunnel '{}' (ID {:?}) quota limit reached. Shutting down...", t.name, t.id);
@@ -315,30 +319,31 @@ async fn auth_middleware(
     next: Next,
 ) -> Result<Response, StatusCode> {
     let token_lock = state.session_token.lock().await;
-    
-    if let Some(ref valid_token) = *token_lock {
-        let auth_header = req.headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let expected = format!("Bearer {}", valid_token);
-        
-        let query_token = req.uri().query()
-            .and_then(|q| {
-                q.split('&')
-                    .find(|p| p.starts_with("token="))
-                    .map(|p| p.trim_start_matches("token="))
-            })
-            .unwrap_or("");
 
-        if constant_time_eq(auth_header.as_bytes(), expected.as_bytes())
-            || constant_time_eq(query_token.as_bytes(), valid_token.as_bytes())
-        {
+    let req_token = if let Some(auth) = req.headers().get("authorization").and_then(|v| v.to_str().ok()) {
+        auth.trim_start_matches("Bearer ").trim().to_string()
+    } else if let Some(q) = req.uri().query() {
+        q.split('&')
+            .find(|p| p.starts_with("token="))
+            .map(|p| p.trim_start_matches("token=").to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    if !req_token.is_empty() {
+        let memory_match = if let Some(ref valid_token) = *token_lock {
+            constant_time_eq(req_token.as_bytes(), valid_token.as_bytes())
+        } else {
+            false
+        };
+
+        if memory_match || db::is_session_valid(&state.db_path, &req_token) {
             drop(token_lock);
             return Ok(next.run(req).await);
         }
     }
-    
+
     drop(token_lock);
     Err(StatusCode::UNAUTHORIZED)
 }
