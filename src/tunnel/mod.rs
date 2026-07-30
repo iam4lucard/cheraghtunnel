@@ -357,14 +357,18 @@ pub async fn run_server(
                     println!("[SERVER] Client node Yamux session closed.");
                 });
                 
-                // Keepalive task: open + close a stream every 10s to prevent ISP idle timeout
+                // Keepalive task: open stream and send PING to prevent ISP idle timeout
                 let mut keepalive_ctrl = ctrl.clone();
                 tokio::spawn(async move {
                     loop {
                         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                         match keepalive_ctrl.open_stream().await {
-                            Ok(stream) => { drop(stream); }
-                            Err(_) => { break; } // Connection dead, stop keepalive
+                            Ok(stream) => {
+                                use tokio::io::AsyncWriteExt;
+                                let mut compat = stream.compat();
+                                let _ = compat.write_all(b"PING").await;
+                            }
+                            Err(_) => { break; }
                         }
                     }
                 });
@@ -570,11 +574,16 @@ pub async fn run_server(
                     break;
                 }
                 Err(_) => {
-                    // Node disconnected/died. Evict it from the pool!
-                    println!("[SERVER] Client node at index {} failed, removing from pool.", idx);
+                    // Node disconnected/died. Safely prune dead controls from pool!
+                    println!("[SERVER] Client node failed stream open, pruning dead controls from pool.");
                     let mut pool = active_controls.lock().await;
-                    if idx < pool.len() {
-                        pool.remove(idx);
+                    let mut i = 0;
+                    while i < pool.len() {
+                        if pool[i].open_stream().await.is_err() {
+                            pool.remove(i);
+                        } else {
+                            i += 1;
+                        }
                     }
                     drop(pool);
                 }
@@ -832,6 +841,7 @@ pub async fn run_client(
                 };
 
                 println!("[CLIENT-WORKER-{}] Handshake succeeded over '{}'", worker_id, current_protocol);
+                ip_index = 0; // Reset failover index to prefer primary IP on reconnection
                 println!("[CLIENT-WORKER-{}] Establishing Yamux Multiplexer Session...", worker_id);
 
                 let mut cfg = yamux::Config::default();
@@ -851,14 +861,18 @@ pub async fn run_client(
                 let conn = yamux::Connection::new(control_socket.compat(), cfg, yamux::Mode::Server);
                 let ctrl = conn.control();
                 
-                // Keepalive task: open + close a stream every 10s to prevent ISP idle timeout
+                // Keepalive task: open stream and send PING to prevent ISP idle timeout
                 let mut keepalive_ctrl = ctrl.clone();
                 tokio::spawn(async move {
                     loop {
                         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                         match keepalive_ctrl.open_stream().await {
-                            Ok(stream) => { drop(stream); }
-                            Err(_) => { break; } // Connection dead, stop keepalive
+                            Ok(stream) => {
+                                use tokio::io::AsyncWriteExt;
+                                let mut compat = stream.compat();
+                                let _ = compat.write_all(b"PING").await;
+                            }
+                            Err(_) => { break; }
                         }
                     }
                 });
