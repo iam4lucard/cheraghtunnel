@@ -144,6 +144,7 @@ pub async fn update_tunnel_handler(
     match db::update_tunnel(&state.db_path, id, &final_tunnel) {
         Ok(true) => {
             if was_active {
+                let _ = db::update_tunnel_status(&state.db_path, id, "deploying");
                 let state_clone = state.clone();
                 tokio::spawn(async move {
                     if let Ok(Some(tunnel)) = db::get_tunnel_by_id(&state_clone.db_path, id) {
@@ -151,7 +152,11 @@ pub async fn update_tunnel_handler(
                             if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
                                 let server_script = generate_server_script(&tunnel);
                                 let cmd = "cat > /tmp/server.sh && bash /tmp/server.sh && rm -f /tmp/server.sh";
-                                let _ = run_ssh_command(&n, cmd, Some(&server_script)).await;
+                                if let Err(e) = run_ssh_command(&n, cmd, Some(&server_script)).await {
+                                    eprintln!("[DEPLOY] Iran Node SSH failed during update: {}", e);
+                                    let _ = db::update_tunnel_status(&state_clone.db_path, id, "error");
+                                    return;
+                                }
                             }
                         }
                         if let Some(k_id) = tunnel.kharej_node_id {
@@ -160,11 +165,16 @@ pub async fn update_tunnel_handler(
                                     if let Ok(Some(i_n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
                                         let client_script = generate_client_script(&tunnel, &i_n.host);
                                         let cmd = "cat > /tmp/client.sh && bash /tmp/client.sh && rm -f /tmp/client.sh";
-                                        let _ = run_ssh_command(&k_n, cmd, Some(&client_script)).await;
+                                        if let Err(e) = run_ssh_command(&k_n, cmd, Some(&client_script)).await {
+                                            eprintln!("[DEPLOY] Kharej Node SSH failed during update: {}", e);
+                                            let _ = db::update_tunnel_status(&state_clone.db_path, id, "error");
+                                            return;
+                                        }
                                     }
                                 }
                             }
                         }
+                        let _ = db::update_tunnel_status(&state_clone.db_path, id, "active");
                     }
                 });
             }
