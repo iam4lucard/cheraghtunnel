@@ -47,11 +47,23 @@ pub struct Node {
 }
 
 pub fn get_db_conn(db_path: &Path) -> Result<Connection> {
-    Connection::open(db_path)
+    let conn = Connection::open(db_path)?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    let _ = conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+    Ok(conn)
 }
 
 pub fn init_db(db_path: &Path) -> Result<()> {
     let conn = get_db_conn(db_path)?;
+
+    // Create sessions table for auth persistence
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            created_at INTEGER DEFAULT (strftime('%s', 'now'))
+        )",
+        [],
+    )?;
 
     // Create tunnels table
     conn.execute(
@@ -593,4 +605,69 @@ pub fn delete_node(db_path: &Path, id: i64) -> Result<()> {
     conn.execute("DELETE FROM nodes WHERE id = ?1", params![id])?;
     Ok(())
 }
+
+pub fn create_session(db_path: &Path, token: &str) -> Result<()> {
+    let conn = get_db_conn(db_path)?;
+    conn.execute("INSERT OR REPLACE INTO sessions (token) VALUES (?1)", params![token])?;
+    Ok(())
+}
+
+pub fn is_session_valid(db_path: &Path, token: &str) -> bool {
+    if let Ok(conn) = get_db_conn(db_path) {
+        if let Ok(count) = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE token = ?1",
+            params![token],
+            |row| row.get::<_, i64>(0),
+        ) {
+            return count > 0;
+        }
+    }
+    false
+}
+
+pub fn delete_session(db_path: &Path, token: &str) -> Result<()> {
+    let conn = get_db_conn(db_path)?;
+    conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+    Ok(())
+}
+
+pub fn get_tunnels_by_node_id(db_path: &Path, node_id: i64) -> Result<Vec<Tunnel>> {
+    let conn = get_db_conn(db_path)?;
+    let mut stmt = conn.prepare("SELECT id, name, iran_node_id, kharej_node_id, protocol, iran_port, kharej_port, control_port, token, decoy_url, backup_ips, transport_options, status, stats_rx, stats_tx, stats_speed_rx, stats_speed_tx, port_hopping, quota_limit_bytes, quota_used_bytes, speed_limit_kbps, expires_at, last_probe_at, e2e_latency_ms FROM tunnels WHERE iran_node_id = ?1 OR kharej_node_id = ?1")?;
+    let tunnel_iter = stmt.query_map(params![node_id], |row| {
+        Ok(Tunnel {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            iran_node_id: row.get(2)?,
+            kharej_node_id: row.get(3)?,
+            protocol: row.get(4)?,
+            iran_port: row.get(5)?,
+            kharej_port: row.get(6)?,
+            control_port: row.get(7)?,
+            token: row.get(8)?,
+            decoy_url: row.get(9)?,
+            backup_ips: row.get(10)?,
+            transport_options: row.get(11)?,
+            status: row.get(12)?,
+            stats_rx: row.get(13)?,
+            stats_tx: row.get(14)?,
+            stats_speed_rx: row.get(15)?,
+            stats_speed_tx: row.get(16)?,
+            port_hopping: row.get(17)?,
+            quota_limit_bytes: row.get(18)?,
+            quota_used_bytes: row.get(19)?,
+            speed_limit_kbps: row.get(20)?,
+            expires_at: row.get(21)?,
+            last_probe_at: row.get(22)?,
+            e2e_latency_ms: row.get(23)?,
+        })
+    })?;
+
+    let mut tunnels = Vec::new();
+    for t in tunnel_iter {
+        tunnels.push(t?);
+    }
+    Ok(tunnels)
+}
+
 
