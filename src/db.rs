@@ -172,7 +172,11 @@ pub fn init_db(db_path: &Path) -> Result<()> {
         )?;
         
         // Generate a random default password and store its SHA-256 hash
-        let default_password = format!("cheragh_{}", rand::random::<u16>());
+        let mut rng = rand::thread_rng();
+        use rand::RngCore;
+        let mut rand_buf = [0u8; 8];
+        rng.fill_bytes(&mut rand_buf);
+        let default_password = format!("cheragh_{}", rand_buf.iter().map(|b| format!("{:02x}", b)).collect::<String>());
         let hashed = hash_password(&default_password);
         conn.execute(
             "INSERT INTO settings (key, value) VALUES ('admin_password', ?1)",
