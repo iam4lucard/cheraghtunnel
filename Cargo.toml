@@ -1,8 +1,16 @@
 [package]
 name = "cheraghtunnel"
-version = "1.35.1"
+version = "1.36.0"
 edition = "2021"
 authors = ["Antigravity Partner"]
+
+[lib]
+name = "cheraghtunnel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cheraghtunnel"
+path = "src/main.rs"
 
 [dependencies]
 # Async Runtime
@@ -42,8 +50,11 @@ futures = "0.3.30"
 socket2 = { version = "0.5.5", features = ["all"] }
 libc = "0.2.152"
 
-# Cryptographic Hashing
+# Cryptographic Hashing & Auth
 sha2 = "0.10"
+argon2 = "0.5.3"
+tempfile = "3.10.1"
+prometheus = { version = "0.13.3", default-features = false }
 
 # TLS & WebSockets
 tokio-rustls = "0.25.0"

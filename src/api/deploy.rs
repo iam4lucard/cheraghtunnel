@@ -6,19 +6,32 @@ pub async fn run_ssh_command(
     command: &str,
     stdin_data: Option<&str>,
 ) -> Result<String, String> {
-    let key_path = if let Some(pk) = &node.private_key {
-        if pk.trim().is_empty() { None } else {
-            let path = format!("/tmp/cheragh_key_{}_{}", node.id.unwrap_or(0), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros());
-            let _ = tokio::fs::write(&path, pk).await;
-            let mut perms_cmd = tokio::process::Command::new("chmod");
-            perms_cmd.args(["600", &path]);
-            let _ = perms_cmd.output().await;
-            Some(path)
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let _key_file = if let Some(pk) = &node.private_key {
+        if pk.trim().is_empty() {
+            None
+        } else {
+            let mut file = tempfile::Builder::new()
+                .prefix("cheragh_key_")
+                .tempfile()
+                .map_err(|e| e.to_string())?;
+            file.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+            file.write_all(pk.as_bytes()).map_err(|e| e.to_string())?;
+            file.flush().map_err(|e| e.to_string())?;
+            Some(file)
         }
-    } else { None };
+    } else {
+        None
+    };
+
+    let key_path = _key_file.as_ref().map(|f| f.path().to_string_lossy().to_string());
 
     let mut ssh_cmd = tokio::process::Command::new(if key_path.is_none() { "sshpass" } else { "ssh" });
-    
+
     if let Some(path) = &key_path {
         ssh_cmd.args([
             "-i", path,
@@ -54,10 +67,6 @@ pub async fn run_ssh_command(
     }
 
     let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
-    
-    if let Some(path) = key_path {
-        let _ = tokio::fs::remove_file(path).await;
-    }
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())

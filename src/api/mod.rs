@@ -263,6 +263,7 @@ pub async fn run_panel(
         .route("/index.html", get(static_handler))
         .route("/style.css", get(static_handler))
         .route("/app.js", get(static_handler))
+        .route("/metrics", get(prometheus_metrics_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/ws/telemetry", get(ws_telemetry_handler))
         .route("/api/tunnels/:id/node-script", get(node_script_handler));
@@ -318,8 +319,6 @@ async fn auth_middleware(
     req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let token_lock = state.session_token.lock().await;
-
     let req_token = if let Some(auth) = req.headers().get("authorization").and_then(|v| v.to_str().ok()) {
         auth.trim_start_matches("Bearer ").trim().to_string()
     } else if let Some(q) = req.uri().query() {
@@ -332,20 +331,61 @@ async fn auth_middleware(
     };
 
     if !req_token.is_empty() {
-        let memory_match = if let Some(ref valid_token) = *token_lock {
-            constant_time_eq(req_token.as_bytes(), valid_token.as_bytes())
-        } else {
-            false
-        };
+        let path = state.db_path.clone();
+        let tok = req_token.clone();
+        let is_valid = tokio::task::spawn_blocking(move || db::is_session_valid(&path, &tok))
+            .await
+            .unwrap_or(false);
 
-        if memory_match || db::is_session_valid(&state.db_path, &req_token) {
-            drop(token_lock);
+        if is_valid {
             return Ok(next.run(req).await);
         }
     }
 
-    drop(token_lock);
     Err(StatusCode::UNAUTHORIZED)
+}
+
+pub async fn prometheus_metrics_handler(
+    Extension(state): Extension<Arc<AppState>>,
+) -> impl IntoResponse {
+    use prometheus::{Encoder, TextEncoder, Registry, Gauge, IntGauge};
+
+    let registry = Registry::new();
+
+    let tunnels_count = IntGauge::new("cheraghtunnel_tunnels_total", "Total registered tunnels").unwrap_or_else(|_| IntGauge::new("tunnels_total", "Total registered tunnels").unwrap());
+    let nodes_count = IntGauge::new("cheraghtunnel_nodes_total", "Total registered nodes").unwrap_or_else(|_| IntGauge::new("nodes_total", "Total registered nodes").unwrap());
+    let cpu_usage = Gauge::new("cheraghtunnel_cpu_usage_percent", "System CPU usage percent").unwrap_or_else(|_| Gauge::new("cpu_usage_percent", "System CPU usage percent").unwrap());
+    let memory_used = IntGauge::new("cheraghtunnel_memory_used_bytes", "System RAM memory used bytes").unwrap_or_else(|_| IntGauge::new("memory_used_bytes", "System RAM memory used bytes").unwrap());
+
+    registry.register(Box::new(tunnels_count.clone())).ok();
+    registry.register(Box::new(nodes_count.clone())).ok();
+    registry.register(Box::new(cpu_usage.clone())).ok();
+    registry.register(Box::new(memory_used.clone())).ok();
+
+    let path = state.db_path.clone();
+    if let Ok(tunnels) = tokio::task::spawn_blocking(move || db::get_tunnels(&path)).await.unwrap_or(Ok(Vec::new())) {
+        tunnels_count.set(tunnels.len() as i64);
+    }
+
+    let path = state.db_path.clone();
+    if let Ok(nodes) = tokio::task::spawn_blocking(move || db::get_nodes(&path)).await.unwrap_or(Ok(Vec::new())) {
+        nodes_count.set(nodes.len() as i64);
+    }
+
+    let sys = state.system_monitor.lock().await;
+    cpu_usage.set(sys.global_cpu_info().cpu_usage() as f64);
+    memory_used.set(sys.used_memory() as i64 * 1024);
+
+    let encoder = TextEncoder::new();
+    let metric_families = registry.gather();
+    let mut buffer = vec![];
+    encoder.encode(&metric_families, &mut buffer).unwrap_or_default();
+
+    let content_type = encoder.format_type().to_string();
+    (
+        [(header::CONTENT_TYPE, content_type)],
+        String::from_utf8(buffer).unwrap_or_default(),
+    )
 }
 
 async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {

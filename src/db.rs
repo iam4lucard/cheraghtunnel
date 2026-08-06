@@ -1,7 +1,47 @@
+use argon2::{
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use rusqlite::{params, Connection, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
-use sha2::{Sha256, Digest};
+
+pub fn hash_password(password: &str) -> String {
+    let mut salt_bytes = [0u8; 16];
+    let mut rng = rand::thread_rng();
+    use rand::RngCore;
+    rng.fill_bytes(&mut salt_bytes);
+    let salt = SaltString::encode_b64(&salt_bytes).expect("salt encoding");
+    let argon2 = Argon2::default();
+    match argon2.hash_password(password.as_bytes(), &salt) {
+        Ok(parsed) => parsed.to_string(),
+        Err(_) => {
+            // Fallback SHA-256
+            let mut hasher = Sha256::new();
+            hasher.update(password.as_bytes());
+            format!("{:x}", hasher.finalize())
+        }
+    }
+}
+
+pub fn verify_password(password: &str, stored: &str) -> bool {
+    if stored.starts_with("$argon2id$") {
+        if let Ok(parsed_hash) = PasswordHash::new(stored) {
+            return Argon2::default()
+                .verify_password(password.as_bytes(), &parsed_hash)
+                .is_ok();
+        }
+    }
+    // Legacy SHA-256 fallback
+    if stored.len() == 64 {
+        let mut hasher = Sha256::new();
+        hasher.update(password.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+        return crate::api::constant_time_eq(hash.as_bytes(), stored.as_bytes());
+    }
+    crate::api::constant_time_eq(password.as_bytes(), stored.as_bytes())
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Tunnel {
@@ -56,14 +96,16 @@ pub fn get_db_conn(db_path: &Path) -> Result<Connection> {
 pub fn init_db(db_path: &Path) -> Result<()> {
     let conn = get_db_conn(db_path)?;
 
-    // Create sessions table for auth persistence
+    // Create sessions table for auth persistence with expiration
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY,
-            created_at INTEGER DEFAULT (strftime('%s', 'now'))
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            expires_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') + 2592000)
         )",
         [],
     )?;
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN expires_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') + 2592000)", []);
 
     // Create tunnels table
     conn.execute(
@@ -401,41 +443,6 @@ pub fn update_tunnel(db_path: &Path, id: i64, tunnel: &Tunnel) -> Result<bool> {
     Ok(count > 0)
 }
 
-/// Hash a password using SHA-256 and return the hex-encoded digest.
-pub fn hash_password(password: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-/// Constant-time byte comparison to prevent timing side-channel attacks.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-/// Verify a password against a stored hash. Supports both:
-/// - New SHA-256 hashed passwords (64-char hex string)
-/// - Legacy plaintext passwords (for backward compatibility during migration)
-///
-/// Uses constant-time comparison to prevent timing side-channel attacks.
-pub fn verify_password(input: &str, stored: &str) -> bool {
-    if stored.len() == 64 && stored.chars().all(|c| c.is_ascii_hexdigit()) {
-        // Stored value looks like a SHA-256 hex hash
-        let hashed_input = hash_password(input);
-        constant_time_eq(hashed_input.as_bytes(), stored.as_bytes())
-    } else {
-        // Legacy plaintext comparison (for DBs not yet migrated)
-        constant_time_eq(input.as_bytes(), stored.as_bytes())
-    }
-}
-
 // -------------------------------------------------------------
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TelemetryRecord {
@@ -612,15 +619,27 @@ pub fn delete_node(db_path: &Path, id: i64) -> Result<()> {
 
 pub fn create_session(db_path: &Path, token: &str) -> Result<()> {
     let conn = get_db_conn(db_path)?;
-    conn.execute("INSERT OR REPLACE INTO sessions (token) VALUES (?1)", params![token])?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let expires_at = now + 30 * 86400; // 30 days session TTL
+    conn.execute(
+        "INSERT OR REPLACE INTO sessions (token, created_at, expires_at) VALUES (?1, ?2, ?3)",
+        params![token, now, expires_at],
+    )?;
     Ok(())
 }
 
 pub fn is_session_valid(db_path: &Path, token: &str) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     if let Ok(conn) = get_db_conn(db_path) {
         if let Ok(count) = conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE token = ?1",
-            params![token],
+            "SELECT COUNT(*) FROM sessions WHERE token = ?1 AND expires_at > ?2",
+            params![token, now],
             |row| row.get::<_, i64>(0),
         ) {
             return count > 0;
@@ -633,6 +652,16 @@ pub fn delete_session(db_path: &Path, token: &str) -> Result<()> {
     let conn = get_db_conn(db_path)?;
     conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
     Ok(())
+}
+
+pub fn cleanup_expired_sessions(db_path: &Path) -> Result<usize> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let conn = get_db_conn(db_path)?;
+    let count = conn.execute("DELETE FROM sessions WHERE expires_at <= ?1", params![now])?;
+    Ok(count)
 }
 
 pub fn get_tunnels_by_node_id(db_path: &Path, node_id: i64) -> Result<Vec<Tunnel>> {

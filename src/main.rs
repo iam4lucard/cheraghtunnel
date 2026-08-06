@@ -1,10 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-
-mod db;
-mod api;
-mod tunnel;
-mod common;
+use cheraghtunnel::{db, api, tunnel};
 
 #[derive(Parser)]
 #[command(name = "cheraghtunnel")]
