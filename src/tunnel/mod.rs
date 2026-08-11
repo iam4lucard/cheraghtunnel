@@ -361,12 +361,13 @@ pub async fn run_server(
                 let mut keepalive_ctrl = ctrl.clone();
                 tokio::spawn(async move {
                     loop {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
                         match keepalive_ctrl.open_stream().await {
                             Ok(stream) => {
                                 use tokio::io::AsyncWriteExt;
                                 let mut compat = stream.compat();
                                 let _ = compat.write_all(b"PING").await;
+                                let _ = compat.shutdown().await;
                             }
                             Err(_) => { break; }
                         }
@@ -574,18 +575,17 @@ pub async fn run_server(
                     break;
                 }
                 Err(_) => {
-                    // Node disconnected/died. Safely prune dead controls from pool!
-                    println!("[SERVER] Client node failed stream open, pruning dead controls from pool.");
+                    // Node disconnected/died. Safely prune failed control index from pool.
                     let mut pool = active_controls.lock().await;
-                    let mut i = 0;
-                    while i < pool.len() {
-                        if pool[i].open_stream().await.is_err() {
-                            pool.remove(i);
-                        } else {
-                            i += 1;
-                        }
+                    if idx < pool.len() {
+                        pool.remove(idx);
                     }
                     drop(pool);
+                    attempts += 1;
+                    if attempts > 30 {
+                        eprintln!("[SERVER] No responsive client nodes available in pool to service user {}", user_addr);
+                        break;
+                    }
                 }
             }
         }
@@ -629,9 +629,9 @@ pub async fn run_client(
     }
 
     let parallel_connections = std::env::var("CHERAGH_WORKERS")
-        .unwrap_or_else(|_| "8".to_string())
+        .unwrap_or_else(|_| "4".to_string())
         .parse::<usize>()
-        .unwrap_or(8);
+        .unwrap_or(4);
         
     let mut handles = Vec::new();
 
@@ -865,12 +865,13 @@ pub async fn run_client(
                 let mut keepalive_ctrl = ctrl.clone();
                 tokio::spawn(async move {
                     loop {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
                         match keepalive_ctrl.open_stream().await {
                             Ok(stream) => {
                                 use tokio::io::AsyncWriteExt;
                                 let mut compat = stream.compat();
                                 let _ = compat.write_all(b"PING").await;
+                                let _ = compat.shutdown().await;
                             }
                             Err(_) => { break; }
                         }
@@ -902,6 +903,7 @@ pub async fn run_client(
                                     Ok(Ok(_)) => {
                                         if &prefix[..4] == b"PNG\n" || &prefix[..4] == b"PING" {
                                             let _ = compat_stream.write_all(b"PONG").await;
+                                            let _ = compat_stream.shutdown().await;
                                             return;
                                         }
                                         let is_udp = &prefix[..4] == b"UDP\n";

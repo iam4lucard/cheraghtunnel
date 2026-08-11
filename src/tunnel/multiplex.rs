@@ -39,16 +39,18 @@ pub fn get_traffic_tracker(tunnel_id: i64) -> Arc<TunnelTraffic> {
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::future::Future;
 use tokio::io::ReadBuf;
 
 pub struct MonitoredStream<S> {
     inner: S,
     tracker: Arc<TunnelTraffic>,
+    delay: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl<S> MonitoredStream<S> {
     pub fn new(inner: S, tracker: Arc<TunnelTraffic>) -> Self {
-        Self { inner, tracker }
+        Self { inner, tracker, delay: None }
     }
 }
 
@@ -81,6 +83,14 @@ impl<S: AsyncRead + Unpin> AsyncRead for MonitoredStream<S> {
 
 impl<S: AsyncWrite + Unpin> AsyncWrite for MonitoredStream<S> {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        // Poll active pacing delay if present
+        if let Some(ref mut d) = self.delay {
+            if d.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            self.delay = None;
+        }
+
         // Enforce quota limit
         let limit = self.tracker.quota_limit.load(Ordering::Relaxed);
         if limit > 0 {
@@ -108,21 +118,24 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for MonitoredStream<S> {
         };
 
         if speed_limit > 0 {
-            let now = std::time::Instant::now();
-            let mut last = self.tracker.last_time.lock().unwrap();
-            let elapsed = now.duration_since(*last).as_secs_f64();
-            if elapsed >= 1.0 {
-                *last = now;
-                self.tracker.bytes_this_sec.store(0, Ordering::Relaxed);
-            }
-            let current = self.tracker.bytes_this_sec.load(Ordering::Relaxed);
-            if current >= (speed_limit as u32 * 1024) {
-                let waker = cx.waker().clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    waker.wake();
-                });
-                return Poll::Pending;
+            let need_sleep = {
+                let now = std::time::Instant::now();
+                let mut last = self.tracker.last_time.lock().unwrap();
+                let elapsed = now.duration_since(*last).as_secs_f64();
+                if elapsed >= 1.0 {
+                    *last = now;
+                    self.tracker.bytes_this_sec.store(0, Ordering::Relaxed);
+                }
+                let current = self.tracker.bytes_this_sec.load(Ordering::Relaxed);
+                current >= (speed_limit as u32 * 1024)
+            };
+
+            if need_sleep {
+                let mut d = Box::pin(tokio::time::sleep(tokio::time::Duration::from_millis(50)));
+                if d.as_mut().poll(cx).is_pending() {
+                    self.delay = Some(d);
+                    return Poll::Pending;
+                }
             }
             self.tracker.bytes_this_sec.fetch_add(buf.len() as u32, Ordering::Relaxed);
         }

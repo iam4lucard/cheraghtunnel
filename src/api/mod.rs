@@ -119,7 +119,7 @@ pub async fn run_panel(
     let db_path_clone = db_path.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             
             if let Ok(tunnels) = db::get_tunnels(&db_path_clone) {
                 let now = std::time::SystemTime::now()
@@ -218,7 +218,7 @@ pub async fn run_panel(
     let db_path_node_check = db_path.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
             if let Ok(nodes) = db::get_nodes(&db_path_node_check) {
                 for node in nodes {
                     if let Some(node_id) = node.id {
@@ -231,9 +231,12 @@ pub async fn run_panel(
                             Ok(Ok(_)) => ("active", start.elapsed().as_secs_f64() * 1000.0),
                             _ => ("unreachable", 999.0),
                         };
+                        
+                        let old_status = node.status.as_deref().unwrap_or("active");
                         let _ = db::update_node_health(&db_path_node_check, node_id, status, latency);
 
-                        if status == "unreachable" && (node.role == "kharej" || node.role == "both") {
+                        // Only trigger failover once upon transition to unreachable
+                        if status == "unreachable" && old_status != "unreachable" && (node.role == "kharej" || node.role == "both") {
                             if let Ok(tunnels) = db::get_tunnels(&db_path_node_check) {
                                 for mut t in tunnels {
                                     if t.kharej_node_id == Some(node_id) && t.status == "active" {
