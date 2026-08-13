@@ -11,10 +11,11 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
     // 1. Disable Nagle's algorithm for instant packet delivery (vital for gaming/real-time)
     let _ = socket.set_nodelay(true);
     
-    // 2. Configure aggressive keepalives to prevent ISP firewalls from dropping idle sessions
+    // 2. Configure resilient keepalives to prevent ISP firewalls from dropping idle sessions while tolerating jitter
     let keepalive = TcpKeepalive::new()
-        .with_time(Duration::from_secs(5))
-        .with_interval(Duration::from_secs(3));
+        .with_time(Duration::from_secs(15))
+        .with_interval(Duration::from_secs(5))
+        .with_retries(6);
     let _ = socket.set_tcp_keepalive(&keepalive);
     
 

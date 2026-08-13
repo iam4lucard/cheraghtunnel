@@ -333,16 +333,16 @@ pub async fn run_server(
             while let Some(control_socket) = control_rx.recv().await {
                 println!("[SERVER] Establishing Yamux session for new client node in pool...");
                 let mut cfg = yamux::Config::default();
-                cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
+                cfg.set_window_update_mode(yamux::WindowUpdateMode::OnReceive);
                 let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
                     val.parse::<usize>().unwrap_or(16) * 1024 * 1024
                 } else {
                     16 * 1024 * 1024
                 };
                 let rx_win = if let Ok(val) = std::env::var("YAMUX_RECEIVE_WINDOW_KB") {
-                    val.parse::<u32>().unwrap_or(4096) * 1024
+                    val.parse::<u32>().unwrap_or(1024) * 1024
                 } else {
-                    4096 * 1024
+                    1024 * 1024
                 };
                 cfg.set_max_buffer_size(max_buf);
                 cfg.set_receive_window(rx_win);
@@ -593,7 +593,11 @@ pub async fn run_server(
         if let Some(stream) = stream_result {
             let tid = tunnel_id;
             tokio::spawn(async move {
-                pipe_streams_monitored(stream.compat(), user_socket, tid).await;
+                use tokio::io::AsyncWriteExt;
+                let mut compat_stream = stream.compat();
+                if compat_stream.write_all(b"TCP\n").await.is_ok() {
+                    pipe_streams_monitored(compat_stream, user_socket, tid).await;
+                }
             });
         }
     }
@@ -845,16 +849,16 @@ pub async fn run_client(
                 println!("[CLIENT-WORKER-{}] Establishing Yamux Multiplexer Session...", worker_id);
 
                 let mut cfg = yamux::Config::default();
-                cfg.set_window_update_mode(yamux::WindowUpdateMode::OnRead);
+                cfg.set_window_update_mode(yamux::WindowUpdateMode::OnReceive);
                 let max_buf = if let Ok(val) = std::env::var("YAMUX_MAX_BUFFER_MB") {
                     val.parse::<usize>().unwrap_or(16) * 1024 * 1024
                 } else {
                     16 * 1024 * 1024
                 };
                 let rx_win = if let Ok(val) = std::env::var("YAMUX_RECEIVE_WINDOW_KB") {
-                    val.parse::<u32>().unwrap_or(4096) * 1024
+                    val.parse::<u32>().unwrap_or(1024) * 1024
                 } else {
-                    4096 * 1024
+                    1024 * 1024
                 };
                 cfg.set_max_buffer_size(max_buf);
                 cfg.set_receive_window(rx_win);
@@ -892,10 +896,9 @@ pub async fn run_client(
                                 let mut compat_stream = stream.compat();
                                 let mut prefix = [0u8; 4];
                                 
-                                // Read the first 4 bytes with a generous timeout of 5 seconds.
-                                // If it times out or fails, we close the stream.
+                                // Read the 4-byte header with a 15-second timeout
                                 let read_res = tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
+                                    std::time::Duration::from_secs(15),
                                     compat_stream.read_exact(&mut prefix)
                                 ).await;
                                 
@@ -906,8 +909,7 @@ pub async fn run_client(
                                             let _ = compat_stream.shutdown().await;
                                             return;
                                         }
-                                        let is_udp = &prefix[..4] == b"UDP\n";
-                                        if is_udp {
+                                        if &prefix[..4] == b"UDP\n" {
                                             // Handle UDP forwarding
                                             let socket = match UdpSocket::bind("0.0.0.0:0").await {
                                                 Ok(s) => s,
@@ -951,8 +953,19 @@ pub async fn run_client(
                                                 _ = &mut tx_task => { rx_task.abort(); }
                                                 _ = &mut rx_task => { tx_task.abort(); }
                                             }
+                                        } else if &prefix[..4] == b"TCP\n" {
+                                            // Explicit TCP stream framing: connect to local service and stream immediately
+                                            match connect_to_local(&l_service).await {
+                                                Ok(local_conn) => {
+                                                    let _ = crate::common::network::optimize_socket(&local_conn);
+                                                    pipe_streams_monitored(compat_stream, local_conn, tid).await;
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[CLIENT] Failed to connect to local service at {}: {}", l_service, e);
+                                                }
+                                            }
                                         } else {
-                                            // TCP: connect to local and forward, writing the prefix first
+                                            // Fallback for legacy streams: connect and forward writing prefix first
                                             match connect_to_local(&l_service).await {
                                                 Ok(mut local_conn) => {
                                                     let _ = crate::common::network::optimize_socket(&local_conn);
