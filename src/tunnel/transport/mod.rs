@@ -469,9 +469,10 @@ where
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
 
+        let payload_len = std::cmp::min(buf.len(), 16384);
+
         // Only build a new frame when the previous one has been fully sent.
         if this.write_pos >= this.write_buf.len() {
-            let payload_len = buf.len() as u16;
             let mut rng = rand::thread_rng();
             let padding_len: usize = rng.gen_range(16..128);
 
@@ -479,14 +480,14 @@ where
             this.write_buf.clear();
             this.write_pos = 0;
 
-            let total = 4 + buf.len() + padding_len;
+            let total = 4 + payload_len + padding_len;
             if this.write_buf.capacity() < total {
                 this.write_buf.reserve(total - this.write_buf.capacity());
             }
 
-            this.write_buf.extend_from_slice(&payload_len.to_be_bytes());
+            this.write_buf.extend_from_slice(&(payload_len as u16).to_be_bytes());
             this.write_buf.extend_from_slice(&(padding_len as u16).to_be_bytes());
-            this.write_buf.extend_from_slice(buf);
+            this.write_buf.extend_from_slice(&buf[..payload_len]);
 
             // Bulk-generate all padding bytes in one RNG call — orders of magnitude
             // faster than byte-by-byte gen::<u8>() in a loop.
@@ -506,7 +507,7 @@ where
             }
         }
 
-        Poll::Ready(Ok(buf.len()))
+        Poll::Ready(Ok(payload_len))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

@@ -1069,11 +1069,14 @@ impl AsyncRead for UdpVirtualStream {
 
         if !inner.rx_buf.is_empty() {
             let n = std::cmp::min(buf.remaining(), inner.rx_buf.len());
-            for _ in 0..n {
-                if let Some(b) = inner.rx_buf.pop_front() {
-                    buf.put_slice(&[b]);
-                }
+            let (slice1, slice2) = inner.rx_buf.as_slices();
+            if slice1.len() >= n {
+                buf.put_slice(&slice1[..n]);
+            } else {
+                buf.put_slice(slice1);
+                buf.put_slice(&slice2[..(n - slice1.len())]);
             }
+            inner.rx_buf.drain(..n);
             return Poll::Ready(Ok(()));
         }
 
@@ -1111,10 +1114,15 @@ impl AsyncWrite for UdpVirtualStream {
             return Poll::Ready(Ok(buf.len()));
         }
 
-        if inner.next_seq - inner.last_acked_seq > 64 {
+        // Scaled in-flight sliding window up to 512 packets for high-speed WAN links
+        if inner.next_seq.saturating_sub(inner.last_acked_seq) > 512 {
             inner.tx_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
+
+        // Clamp payload to 1350 bytes to avoid Path MTU packet fragmentation on international WAN
+        let chunk_len = std::cmp::min(buf.len(), 1350);
+        let chunk = &buf[..chunk_len];
 
         let seq = inner.next_seq;
         inner.next_seq += 1;
@@ -1125,7 +1133,7 @@ impl AsyncWrite for UdpVirtualStream {
             inner.next_expected_seq - 1
         };
 
-        let framed = inner.frame_packet(PKT_DATA, seq, ack_val, buf);
+        let framed = inner.frame_packet(PKT_DATA, seq, ack_val, chunk);
         let socket = inner.socket.clone();
         let peer = inner.peer;
         let framed_clone = framed.clone();
@@ -1138,7 +1146,7 @@ impl AsyncWrite for UdpVirtualStream {
         });
 
         if inner.mode == UdpMode::Photon {
-            if let Some(parity) = inner.fec_encoder.add_packet(buf) {
+            if let Some(parity) = inner.fec_encoder.add_packet(chunk) {
                 let parity_seq = inner.next_seq;
                 inner.next_seq += 1;
                 let parity_framed = inner.frame_packet(PKT_DATA, parity_seq, ack_val, &parity);
@@ -1169,7 +1177,7 @@ impl AsyncWrite for UdpVirtualStream {
             let _ = try_send_msg(&socket, &framed_clone, peer);
         }
 
-        Poll::Ready(Ok(buf.len()))
+        Poll::Ready(Ok(chunk_len))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
