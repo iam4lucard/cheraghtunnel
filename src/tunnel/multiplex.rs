@@ -159,7 +159,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for MonitoredStream<S> {
 }
 
 /// Pipes data bidirectionally between two streams, counting bytes in real-time.
-/// Uses tokio::io::copy_bidirectional to guarantee high-performance full-duplex transfer.
+/// Uses tokio::io::copy_bidirectional_with_sizes with 64KB buffers to minimize syscalls and guarantee ultra low-latency full-duplex transfer.
 pub async fn pipe_streams_monitored<S1, S2>(
     stream1: S1,
     mut stream2: S2,
@@ -171,7 +171,7 @@ pub async fn pipe_streams_monitored<S1, S2>(
     let tracker = get_traffic_tracker(tunnel_id);
     let mut monitored_stream1 = MonitoredStream::new(stream1, tracker);
     
-    let _ = tokio::io::copy_bidirectional(&mut monitored_stream1, &mut stream2).await;
+    let _ = tokio::io::copy_bidirectional_with_sizes(&mut monitored_stream1, &mut stream2, 65536, 65536).await;
 }
 
 /// Legacy/Direct pipe without monitoring (used for control connections)
@@ -181,7 +181,7 @@ where
     S1: AsyncRead + AsyncWrite + Unpin,
     S2: AsyncRead + AsyncWrite + Unpin,
 {
-    let _ = tokio::io::copy_bidirectional(&mut stream1, &mut stream2).await;
+    let _ = tokio::io::copy_bidirectional_with_sizes(&mut stream1, &mut stream2, 65536, 65536).await;
 }
 
 /// Helper to connect to local service

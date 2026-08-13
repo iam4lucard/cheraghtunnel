@@ -633,9 +633,9 @@ pub async fn run_client(
     }
 
     let parallel_connections = std::env::var("CHERAGH_WORKERS")
-        .unwrap_or_else(|_| "4".to_string())
+        .unwrap_or_else(|_| "8".to_string())
         .parse::<usize>()
-        .unwrap_or(4);
+        .unwrap_or(8);
         
     let mut handles = Vec::new();
 

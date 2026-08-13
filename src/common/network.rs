@@ -71,6 +71,16 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
                 &notsent as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_uint>() as libc::socklen_t,
             );
+
+            // TCP_FASTOPEN_CONNECT: Send data directly in SYN packet to save 1 RTT (70-100ms)
+            let fastopen: libc::c_int = 1;
+            let _ = libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_FASTOPEN_CONNECT,
+                &fastopen as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
         }
     }
     
