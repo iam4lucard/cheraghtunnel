@@ -105,6 +105,11 @@ if [ -f "/usr/local/bin/cheraghtunnel-{id}.tmp" ]; then
     mv /usr/local/bin/cheraghtunnel-{id}.tmp /usr/local/bin/cheraghtunnel-{id}
 fi
 
+if [ ! -f "/usr/local/bin/cheraghtunnel-{id}" ] && [ -f "/usr/local/bin/cheraghtunnel" ]; then
+    cp /usr/local/bin/cheraghtunnel /usr/local/bin/cheraghtunnel-{id}
+    chmod +x /usr/local/bin/cheraghtunnel-{id}
+fi
+
 cat << 'EOF' > /etc/systemd/system/cheragh-server-{id}.service
 [Unit]
 Description=CheraghTunnel Server {id}
@@ -163,6 +168,11 @@ if [ -f "/usr/local/bin/cheraghtunnel-{id}.tmp" ]; then
     chmod +x /usr/local/bin/cheraghtunnel-{id}.tmp
     # Atomic rename: replaces binary only after fully downloaded, avoids Text-file-busy
     mv /usr/local/bin/cheraghtunnel-{id}.tmp /usr/local/bin/cheraghtunnel-{id}
+fi
+
+if [ ! -f "/usr/local/bin/cheraghtunnel-{id}" ] && [ -f "/usr/local/bin/cheraghtunnel" ]; then
+    cp /usr/local/bin/cheraghtunnel /usr/local/bin/cheraghtunnel-{id}
+    chmod +x /usr/local/bin/cheraghtunnel-{id}
 fi
 
 cat << 'EOF' > /etc/systemd/system/cheragh-node-{id}.service

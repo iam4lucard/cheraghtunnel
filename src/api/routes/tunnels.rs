@@ -49,7 +49,32 @@ pub async fn create_tunnel_handler(
     }
 
     match db::create_tunnel(&state.db_path, &payload) {
-        Ok(id) => (StatusCode::CREATED, Json(id)).into_response(),
+        Ok(id) => {
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                if let Ok(Some(tunnel)) = db::get_tunnel_by_id(&state_clone.db_path, id) {
+                    if let Some(i_id) = tunnel.iran_node_id {
+                        if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                            let server_script = generate_server_script(&tunnel);
+                            let cmd = "cat > /tmp/server.sh && bash /tmp/server.sh && rm -f /tmp/server.sh";
+                            let _ = run_ssh_command(&n, cmd, Some(&server_script)).await;
+                        }
+                    }
+                    if let Some(k_id) = tunnel.kharej_node_id {
+                        if let Ok(Some(k_n)) = db::get_node_by_id(&state_clone.db_path, k_id) {
+                            if let Some(i_id) = tunnel.iran_node_id {
+                                if let Ok(Some(i_n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
+                                    let client_script = generate_client_script(&tunnel, &i_n.host);
+                                    let cmd = "cat > /tmp/client.sh && bash /tmp/client.sh && rm -f /tmp/client.sh";
+                                    let _ = run_ssh_command(&k_n, cmd, Some(&client_script)).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            (StatusCode::CREATED, Json(id)).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
