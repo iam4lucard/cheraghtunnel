@@ -15,19 +15,32 @@ use kcp_tokio::{KcpConfig, KcpListener, KcpStream};
 const MTU: usize = 1400;
 
 pub fn apply_iptables_drop(port: u16) {
-    println!("[FakeTCP] Applying iptables RST drop rule for port {}...", port);
-    let _ = Command::new("iptables")
-        .args(["-D", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", &port.to_string(), "-j", "DROP"])
+    println!("[FakeTCP] Ensuring iptables RST drop rule for port {}...", port);
+    let check = Command::new("iptables")
+        .args(["-C", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", &port.to_string(), "-j", "DROP"])
         .status();
-    let _ = Command::new("iptables")
-        .args(["-I", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", &port.to_string(), "-j", "DROP"])
-        .status();
+    if check.map(|s| !s.success()).unwrap_or(true) {
+        let _ = Command::new("iptables")
+            .args(["-I", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", &port.to_string(), "-j", "DROP"])
+            .status();
+    }
 }
 
 pub fn remove_iptables_drop(port: u16) {
     let _ = Command::new("iptables")
         .args(["-D", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", &port.to_string(), "-j", "DROP"])
         .status();
+}
+
+pub fn apply_iptables_drop_range() {
+    let check = Command::new("iptables")
+        .args(["-C", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", "40000:65000", "-j", "DROP"])
+        .status();
+    if check.map(|s| !s.success()).unwrap_or(true) {
+        let _ = Command::new("iptables")
+            .args(["-I", "OUTPUT", "-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", "40000:65000", "-j", "DROP"])
+            .status();
+    }
 }
 
 pub struct IptablesGuard {
@@ -107,7 +120,7 @@ impl FakeTcpClient {
         };
         self.local_port = rand::thread_rng().gen_range(40000..65000) as u16;
 
-        let guard = Arc::new(IptablesGuard::new(self.local_port));
+        apply_iptables_drop_range();
 
         let (tx, mut rx) = transport_channel(8 * 1024 * 1024, TransportChannelType::Layer3(IpNextHeaderProtocols::Tcp)).unwrap();
         
@@ -129,12 +142,10 @@ impl FakeTcpClient {
 
         let udp_rx = std_udp.try_clone().unwrap();
         let addr_rx = client_udp_addr.clone();
-        let guard_clone = guard.clone();
         
         // Blocking thread for receiving FakeTCP
         std::thread::spawn(move || {
             let mut iter = pnet::transport::ipv4_packet_iter(&mut rx);
-            let _g = guard_clone;
             loop {
                 if let Ok((ipv4, _)) = iter.next() {
                     if ipv4.get_next_level_protocol() == IpNextHeaderProtocols::Tcp 
