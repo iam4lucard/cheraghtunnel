@@ -26,13 +26,15 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
     // 4. Set IP Type of Service (TOS) to Low Delay to prioritize packets on routers
     let _ = socket.set_tos(0x10); // IPTOS_LOWDELAY
     
-    // 5. Apply TCP BBR congestion control (Linux only, falls back to cubic if BBR is unavailable)
+    // 5. Apply TCP BBR congestion control, TCP_QUICKACK, and low watermark bufferbloat reduction (Linux only)
     #[cfg(target_os = "linux")]
     {
+        use std::os::fd::AsRawFd;
+        let fd = stream.as_raw_fd();
         let optval = b"bbr\0";
         unsafe {
             let ret = libc::setsockopt(
-                std::os::fd::AsRawFd::as_raw_fd(stream),
+                fd,
                 libc::IPPROTO_TCP,
                 libc::TCP_CONGESTION,
                 optval.as_ptr() as *const libc::c_void,
@@ -42,13 +44,33 @@ pub fn optimize_socket(stream: &TcpStream) -> io::Result<()> {
                 // Fallback to cubic if BBR is not configured in kernel
                 let optval_cubic = b"cubic\0";
                 libc::setsockopt(
-                    std::os::fd::AsRawFd::as_raw_fd(stream),
+                    fd,
                     libc::IPPROTO_TCP,
                     libc::TCP_CONGESTION,
                     optval_cubic.as_ptr() as *const libc::c_void,
                     optval_cubic.len() as libc::socklen_t,
                 );
             }
+
+            // TCP_QUICKACK: Send acknowledgments immediately (eliminates 40ms delayed-ACK latency)
+            let quickack: libc::c_int = 1;
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_QUICKACK,
+                &quickack as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+
+            // TCP_NOTSENT_LOWAT: Keep unsent byte buffer small (16KB) to prevent bufferbloat
+            let notsent: libc::c_uint = 16384;
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                libc::TCP_NOTSENT_LOWAT,
+                &notsent as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_uint>() as libc::socklen_t,
+            );
         }
     }
     
