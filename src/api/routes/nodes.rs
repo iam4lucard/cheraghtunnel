@@ -61,7 +61,11 @@ pub async fn update_node_handler(
                                 if let Ok(Some(n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
                                     let server_script = crate::api::deploy::generate_server_script(&tunnel);
                                     let cmd = "cat > /tmp/server.sh && bash /tmp/server.sh && rm -f /tmp/server.sh";
-                                    let _ = crate::api::deploy::run_ssh_command(&n, cmd, Some(&server_script)).await;
+                                    if let Err(e) = crate::api::deploy::run_ssh_command(&n, cmd, Some(&server_script)).await {
+                                        eprintln!("[DEPLOY] Iran Node SSH failed on node update: {}", e);
+                                        let _ = db::update_tunnel_status(&state_clone.db_path, tunnel.id.unwrap(), "error");
+                                        continue;
+                                    }
                                 }
                             }
                             if let Some(k_id) = tunnel.kharej_node_id {
@@ -70,7 +74,11 @@ pub async fn update_node_handler(
                                         if let Ok(Some(i_n)) = db::get_node_by_id(&state_clone.db_path, i_id) {
                                             let client_script = crate::api::deploy::generate_client_script(&tunnel, &i_n.host);
                                             let cmd = "cat > /tmp/client.sh && bash /tmp/client.sh && rm -f /tmp/client.sh";
-                                            let _ = crate::api::deploy::run_ssh_command(&k_n, cmd, Some(&client_script)).await;
+                                            if let Err(e) = crate::api::deploy::run_ssh_command(&k_n, cmd, Some(&client_script)).await {
+                                                eprintln!("[DEPLOY] Kharej Node SSH failed on node update: {}", e);
+                                                let _ = db::update_tunnel_status(&state_clone.db_path, tunnel.id.unwrap(), "error");
+                                                continue;
+                                            }
                                         }
                                     }
                                 }

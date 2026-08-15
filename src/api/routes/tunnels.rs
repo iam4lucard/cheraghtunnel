@@ -35,7 +35,7 @@ pub async fn create_tunnel_handler(
     match db::get_tunnels(&state.db_path) {
         Ok(tunnels) => {
             for t in tunnels {
-                if t.iran_node_id == payload.iran_node_id {
+                if payload.iran_node_id.is_some() && t.iran_node_id == payload.iran_node_id {
                     if t.iran_port == payload.iran_port {
                         return (StatusCode::BAD_REQUEST, "Public port is already in use on this server").into_response();
                     }
@@ -362,9 +362,11 @@ pub async fn restore_handler(
             return (StatusCode::BAD_REQUEST, format!("Invalid SQLite file: {}", e)).into_response();
         }
 
-        if let Err(e) = tokio::fs::rename(&tmp_path, &state.db_path).await {
+        if let Err(e) = tokio::fs::copy(&tmp_path, &state.db_path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to restore database: {}", e)).into_response();
         }
+        let _ = tokio::fs::remove_file(&tmp_path).await;
 
         return StatusCode::OK.into_response();
     }

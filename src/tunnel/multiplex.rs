@@ -137,13 +137,13 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for MonitoredStream<S> {
                     return Poll::Pending;
                 }
             }
-            self.tracker.bytes_this_sec.fetch_add(buf.len() as u32, Ordering::Relaxed);
         }
-
-
 
         let res = Pin::new(&mut self.inner).poll_write(cx, buf);
         if let Poll::Ready(Ok(n)) = &res {
+            if speed_limit > 0 {
+                self.tracker.bytes_this_sec.fetch_add(*n as u32, Ordering::Relaxed);
+            }
             self.tracker.tx_bytes.fetch_add(*n as u64, Ordering::Relaxed);
         }
         res

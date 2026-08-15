@@ -845,7 +845,6 @@ pub async fn run_client(
                 };
 
                 println!("[CLIENT-WORKER-{}] Handshake succeeded over '{}'", worker_id, current_protocol);
-                ip_index = 0; // Reset failover index to prefer primary IP on reconnection
                 println!("[CLIENT-WORKER-{}] Establishing Yamux Multiplexer Session...", worker_id);
 
                 let mut cfg = yamux::Config::default();

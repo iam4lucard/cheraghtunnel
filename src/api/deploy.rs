@@ -36,6 +36,9 @@ pub async fn run_ssh_command(
         ssh_cmd.args([
             "-i", path,
             "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "LogLevel=ERROR",
             "-p", &node.port.to_string(),
             &format!("{}@{}", node.username, node.host),
             command
@@ -45,6 +48,9 @@ pub async fn run_ssh_command(
             "-p", node.password.as_deref().unwrap_or_default(),
             "ssh",
             "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "LogLevel=ERROR",
             "-p", &node.port.to_string(),
             &format!("{}@{}", node.username, node.host),
             command

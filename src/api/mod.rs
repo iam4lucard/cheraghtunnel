@@ -188,10 +188,18 @@ pub async fn run_panel(
                         }
 
                         if measured_rtt.is_none() {
-                            // Probe end-to-end through Iran public port (succeeds only when Yamux client is alive)
-                            if let Some(i_id) = t.iran_node_id {
-                                if let Ok(Some(i_node)) = db::get_node_by_id(&db_path_clone, i_id) {
-                                    measured_rtt = measure_tcp_ping(&i_node.host, t.iran_port).await;
+                            // Fallback 1: Ping Iran server public port (where traffic enters)
+                            measured_rtt = measure_tcp_ping(&iran_host, t.iran_port).await;
+                            if measured_rtt.is_none() {
+                                // Fallback 2: Ping Iran server control port
+                                measured_rtt = measure_tcp_ping(&iran_host, t.control_port).await;
+                            }
+                            if measured_rtt.is_none() {
+                                if let Some(k_id) = t.kharej_node_id {
+                                    if let Ok(Some(k_node)) = db::get_node_by_id(&db_path_clone, k_id) {
+                                        // Fallback 3: Ping Kharej server SSH/management port
+                                        measured_rtt = measure_tcp_ping(&k_node.host, k_node.port).await;
+                                    }
                                 }
                             }
                         }
